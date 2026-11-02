@@ -28,7 +28,18 @@ import java.util.List;
  * <p>filter 端点支持 page/pageSize（上限 100）+ tags 过滤，可拿到全部在挂金龙。</p>
  */
 public final class CoflClient {
-    private static final String BASE_URL = "https://sky.coflnet.com/api/";
+    /**
+     * 与官方 SkyCofl mod 一致：主域名在 Cloudflare 后面，被拦时回退到官方自己的镜像域名。
+     * （官方 CoflCore 的 QueryServerCommands 也是同样的多端点回退顺序。）
+     */
+    private static final String[] BASE_URLS = {
+            "https://sky.coflnet.com/api/",
+            "https://sky-commands.coflnet.com/api/",
+            "https://sky-mod.coflnet.com/api/"
+    };
+
+    /** 最近一次请求成功的域名，后续请求优先使用，避免每次都先吃一次 403。 */
+    private static volatile String preferredBase = BASE_URLS[0];
     private static final String USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     + "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 GdragFlip/1.0";
@@ -85,7 +96,33 @@ public final class CoflClient {
     }
 
     private static JsonObject getJson(String path) throws IOException, InterruptedException {
-        HttpRequest request = HttpRequest.newBuilder(URI.create(BASE_URL + path))
+        IOException lastError = null;
+        for (String base : orderedBases()) {
+            try {
+                JsonObject root = getJson(base, path);
+                preferredBase = base;
+                return root;
+            } catch (IOException e) {
+                lastError = e;
+                System.err.println("[gdragflip] Cofl endpoint failed: " + base + " -> " + e.getMessage());
+            }
+        }
+        throw new IOException("Cofl 所有域名均不可用：" + lastError.getMessage(), lastError);
+    }
+
+    private static List<String> orderedBases() {
+        List<String> bases = new ArrayList<>(BASE_URLS.length);
+        bases.add(preferredBase);
+        for (String base : BASE_URLS) {
+            if (!base.equals(preferredBase)) {
+                bases.add(base);
+            }
+        }
+        return bases;
+    }
+
+    private static JsonObject getJson(String base, String path) throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder(URI.create(base + path))
                 .timeout(Duration.ofSeconds(20))
                 .header("User-Agent", USER_AGENT)
                 .header("Accept", "application/json, text/plain, */*")
@@ -103,7 +140,7 @@ public final class CoflClient {
             System.err.println("[gdragflip] Cofl HTTP " + response.statusCode()
                     + " body=" + shorten(response.body(), 300));
             if (response.statusCode() == 403) {
-                throw new IOException("Cofl 返回 HTTP 403（被 Cloudflare 拦截；若开了代理/VPN，请关闭或更换节点后重试）");
+                throw new IOException("HTTP 403（Cloudflare 拦截）");
             }
             if (response.statusCode() == 429) {
                 throw new IOException("Cofl 请求被限流（429），请稍后再试");
