@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "gdragflip",
+  "version": "${version}",
+  "name": "Golden Dragon Flip",
+  "description": "分析 Hypixel SkyBlock 拍卖行中 100 级以上的 Golden Dragon，按等级线性均价找出低于理论价、适合养到 200 级再卖的挂单。数据源 sky.coflnet.com。",
+  "authors": [
+    "GdragFlip"
+  ],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "net.gdragflip.GdragFlipMod"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.20.0",
+    "fabric-api": "*",
+    "minecraft": "~26.3",
+    "java": ">=25"
+  }
+}
