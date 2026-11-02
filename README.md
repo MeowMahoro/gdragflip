@@ -56,7 +56,9 @@ Lvl 1~99 是 `Golden Dragon Egg`（未破壳、不能装备宠物物品），因
 gradlew build
 ```
 
-产物：`build/libs/gdragflip-1.0.0-26.3.jar`，放入 `mods/`，依赖 Fabric Loader 与 Fabric API。
+产物：`build/libs/gdragflip-<版本>-<MC版本>.jar`，放入 `mods/`，依赖 Fabric Loader 与 Fabric API。
+
+分支对应关系：`main` 面向 MC 26.3，`26.2` 面向 MC 26.2（只需切换 `gradle.properties` 中的 `minecraft_version` / `fabric_api_version` 与 `fabric.mod.json` 的 `minecraft` 依赖）。
 
 ## 局限
 
