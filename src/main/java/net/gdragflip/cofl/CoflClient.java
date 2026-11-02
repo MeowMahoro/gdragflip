@@ -29,7 +29,9 @@ import java.util.List;
  */
 public final class CoflClient {
     private static final String BASE_URL = "https://sky.coflnet.com/api/";
-    private static final String USER_AGENT = "GdragFlip/1.0 (Fabric mod)";
+    private static final String USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    + "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 GdragFlip/1.0";
     private static final int PAGE_SIZE = 100;
     private static final int MAX_PAGES = 10;
 
@@ -86,7 +88,9 @@ public final class CoflClient {
         HttpRequest request = HttpRequest.newBuilder(URI.create(BASE_URL + path))
                 .timeout(Duration.ofSeconds(20))
                 .header("User-Agent", USER_AGENT)
-                .header("Accept", "application/json")
+                .header("Accept", "application/json, text/plain, */*")
+                .header("Accept-Language", "en-US,en;q=0.9")
+                .header("Referer", "https://sky.coflnet.com/")
                 .GET()
                 .build();
 
@@ -95,6 +99,15 @@ public final class CoflClient {
             throw new IOException("Cofl 请求被限流（429），请稍后再试");
         }
         if (response.statusCode() != 200) {
+            // 写入游戏日志便于诊断（403 多为 Cloudflare 对代理/VPN 出口的拦截）。
+            System.err.println("[gdragflip] Cofl HTTP " + response.statusCode()
+                    + " body=" + shorten(response.body(), 300));
+            if (response.statusCode() == 403) {
+                throw new IOException("Cofl 返回 HTTP 403（被 Cloudflare 拦截；若开了代理/VPN，请关闭或更换节点后重试）");
+            }
+            if (response.statusCode() == 429) {
+                throw new IOException("Cofl 请求被限流（429），请稍后再试");
+            }
             throw new IOException("Cofl 返回 HTTP " + response.statusCode());
         }
 
@@ -103,6 +116,14 @@ public final class CoflClient {
             throw new IOException("Cofl 返回内容无法解析");
         }
         return root;
+    }
+
+    private static String shorten(String value, int max) {
+        if (value == null) {
+            return "";
+        }
+        String flat = value.replaceAll("\\s+", " ").strip();
+        return flat.length() <= max ? flat : flat.substring(0, max) + "…";
     }
 
     private static String string(JsonObject object, String key) {
