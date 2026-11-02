@@ -47,6 +47,8 @@ Lvl 1~99 是 `Golden Dragon Egg`（未破壳、不能装备宠物物品），因
 
 - 免费接口有速率限制（约 80 次/分钟），mod 每次查询只发 1~N 个分页请求，并在 15 秒内复用上次结果。
 - 查询在后台线程执行，不阻塞游戏。
+- **Cloudflare 兼容**：Cloudflare 会按 TLS 指纹拦截 Java HTTP 客户端（HTTP/1.1、HTTP/2、HttpsURLConnection 实测均返回 403），因此 Java 请求失败后会自动改用系统 `curl`（Windows 自带 `C:\Windows\System32\curl.exe`，macOS/Linux 为 `curl`），并在本次游戏会话内一直使用 curl。
+- 域名按 `sky.coflnet.com` → `sky-commands.coflnet.com` → `sky-mod.coflnet.com` 的顺序回退（后两个是官方 mod 使用的备用域名）。
 
 ## 构建
 

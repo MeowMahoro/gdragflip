@@ -6,10 +6,14 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -17,6 +21,9 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Cofl SkyApi 只读客户端。
@@ -40,6 +47,9 @@ public final class CoflClient {
 
     /** 最近一次请求成功的域名，后续请求优先使用，避免每次都先吃一次 403。 */
     private static volatile String preferredBase = BASE_URLS[0];
+
+    /** Java HttpClient 被 Cloudflare 拦过一次后，本会话内直接改用系统 curl。 */
+    private static volatile boolean preferCurl = false;
     private static final String USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     + "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 GdragFlip/1.0";
@@ -97,17 +107,33 @@ public final class CoflClient {
 
     private static JsonObject getJson(String path) throws IOException, InterruptedException {
         IOException lastError = null;
-        for (String base : orderedBases()) {
+        List<String> bases = orderedBases();
+
+        if (!preferCurl) {
+            // 只试一次 Java：Cloudflare 是按 TLS 指纹拦截的，换域名没有意义，
+            // 多试几次只会多触发几次 403。
             try {
-                JsonObject root = getJson(base, path);
+                JsonObject root = getJsonJava(preferredBase, path);
+                return root;
+            } catch (IOException e) {
+                lastError = e;
+                System.err.println("[gdragflip] Java HTTP failed: " + preferredBase + " -> " + e.getMessage());
+            }
+            preferCurl = true;
+        }
+
+        for (String base : bases) {
+            try {
+                JsonObject root = getJsonCurl(base, path);
                 preferredBase = base;
                 return root;
             } catch (IOException e) {
                 lastError = e;
-                System.err.println("[gdragflip] Cofl endpoint failed: " + base + " -> " + e.getMessage());
+                System.err.println("[gdragflip] curl failed: " + base + " -> " + e.getMessage());
             }
         }
-        throw new IOException("Cofl 所有域名均不可用：" + lastError.getMessage(), lastError);
+
+        throw new IOException("Cofl 请求失败：" + (lastError == null ? "未知错误" : lastError.getMessage()), lastError);
     }
 
     private static List<String> orderedBases() {
@@ -121,7 +147,7 @@ public final class CoflClient {
         return bases;
     }
 
-    private static JsonObject getJson(String base, String path) throws IOException, InterruptedException {
+    private static JsonObject getJsonJava(String base, String path) throws IOException, InterruptedException {
         HttpRequest request = HttpRequest.newBuilder(URI.create(base + path))
                 .timeout(Duration.ofSeconds(20))
                 .header("User-Agent", USER_AGENT)
@@ -153,6 +179,71 @@ public final class CoflClient {
             throw new IOException("Cofl 返回内容无法解析");
         }
         return root;
+    }
+
+    /**
+     * 通过系统 curl 请求。Cloudflare 会按 TLS 指纹拦截 Java 客户端（HTTP/1.1、HTTP/2、
+     * HttpsURLConnection 实测均为 403），而 curl 可以正常通过，因此作为 Java 失败后的回退。
+     */
+    private static JsonObject getJsonCurl(String base, String path) throws IOException, InterruptedException {
+        String curl = curlExecutable();
+        ProcessBuilder builder = new ProcessBuilder(
+                curl, "-sS", "-f", "--compressed",
+                "--max-time", "30",
+                "-A", USER_AGENT,
+                "-H", "Accept: application/json",
+                base + path);
+
+        Process process;
+        try {
+            process = builder.start();
+        } catch (IOException e) {
+            throw new IOException("无法启动 curl（" + curl + "）", e);
+        }
+
+        CompletableFuture<byte[]> stdout = CompletableFuture.supplyAsync(() -> readAll(process.getInputStream()));
+        CompletableFuture<byte[]> stderr = CompletableFuture.supplyAsync(() -> readAll(process.getErrorStream()));
+
+        if (!process.waitFor(40, TimeUnit.SECONDS)) {
+            process.destroyForcibly();
+            throw new IOException("curl 超时");
+        }
+
+        String body = new String(stdout.join(), StandardCharsets.UTF_8);
+        String error = new String(stderr.join(), StandardCharsets.UTF_8).strip();
+        if (process.exitValue() != 0) {
+            throw new IOException("curl 退出码 " + process.exitValue()
+                    + (error.isEmpty() ? "" : "：" + shorten(error, 200)));
+        }
+
+        JsonObject root = GSON.fromJson(body, JsonObject.class);
+        if (root == null) {
+            throw new IOException("Cofl 返回内容无法解析");
+        }
+        return root;
+    }
+
+    private static String curlExecutable() {
+        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        if (os.contains("win")) {
+            String systemRoot = System.getenv("SystemRoot");
+            if (systemRoot != null) {
+                Path candidate = Path.of(systemRoot, "System32", "curl.exe");
+                if (Files.isRegularFile(candidate)) {
+                    return candidate.toString();
+                }
+            }
+            return "curl.exe";
+        }
+        return "curl";
+    }
+
+    private static byte[] readAll(InputStream stream) {
+        try (stream) {
+            return stream.readAllBytes();
+        } catch (IOException e) {
+            return new byte[0];
+        }
     }
 
     private static String shorten(String value, int max) {
