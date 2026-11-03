@@ -88,27 +88,20 @@ public final class ChatReport {
     private static Component line(int rank, GdragOpportunity opportunity, Map<String, Integer> candyUsed) {
         GdragListing listing = opportunity.listing();
         ChatFormatting profitColor = opportunity.profit() > 0 ? ChatFormatting.GREEN : ChatFormatting.GRAY;
+        Integer candy = candyUsed.get(listing.uuid());
 
         MutableComponent line = Component.literal(" #" + rank + "  ").withStyle(ChatFormatting.DARK_GRAY)
                 .append(Component.literal("Lvl " + listing.level()).withStyle(ChatFormatting.GOLD))
                 .append(Component.literal("  " + coins(listing.price())).withStyle(ChatFormatting.WHITE))
-                .append(Component.literal("  理论 " + coins(opportunity.expectedPrice())).withStyle(ChatFormatting.GRAY))
-                .append(Component.literal("  利润 " + signedCoins(opportunity.profit())
-                        + " (" + signedPercent(opportunity.roi()) + ")").withStyle(profitColor));
+                .append(Component.literal("  " + signedCoins(opportunity.profit())).withStyle(profitColor));
 
-        String remaining = remaining(listing.endEpochMillis());
-        if (!remaining.isEmpty()) {
-            line.append(Component.literal("  剩 " + remaining).withStyle(ChatFormatting.DARK_GRAY));
-        }
-
-        Integer candy = candyUsed.get(listing.uuid());
         if (candy != null && candy > 0) {
-            line.append(Component.literal("  " + candy + "/10 pet candy used").withStyle(ChatFormatting.YELLOW));
+            line.append(Component.literal(" (" + candy + "/10)").withStyle(ChatFormatting.YELLOW));
         }
 
         line.append(auctionButton(listing.uuid()))
                 .append(webButton(listing.uuid()))
-                .withStyle(style -> style.withHoverEvent(new HoverEvent.ShowText(tooltip(listing))));
+                .withStyle(style -> style.withHoverEvent(new HoverEvent.ShowText(tooltip(opportunity, candy))));
 
         return line;
     }
@@ -127,13 +120,28 @@ public final class ChatReport {
                 .withHoverEvent(new HoverEvent.ShowText(Component.literal("打开 sky.coflnet.com 拍卖页"))));
     }
 
-    private static Component tooltip(GdragListing listing) {
-        return Component.literal(listing.itemName()).withStyle(ChatFormatting.GOLD)
+    private static Component tooltip(GdragOpportunity opportunity, Integer candy) {
+        GdragListing listing = opportunity.listing();
+        MutableComponent tooltip = Component.literal(listing.itemName()).withStyle(ChatFormatting.GOLD)
                 .append(Component.literal("\n卖家: " + (listing.playerName().isEmpty() ? "未知" : listing.playerName()))
                         .withStyle(ChatFormatting.GRAY))
                 .append(Component.literal("\n价格: " + String.format(Locale.ROOT, "%,d", listing.price()) + " coins")
                         .withStyle(ChatFormatting.GRAY))
-                .append(Component.literal("\nUUID: " + listing.uuid()).withStyle(ChatFormatting.DARK_GRAY));
+                .append(Component.literal("\n理论价: " + String.format(Locale.ROOT, "%,d", opportunity.expectedPrice()) + " coins")
+                        .withStyle(ChatFormatting.GRAY))
+                .append(Component.literal("\n利润: " + signedCoins(opportunity.profit())
+                        + " (" + signedPercent(opportunity.roi()) + ")").withStyle(ChatFormatting.GRAY));
+
+        String remaining = remaining(listing.endEpochMillis());
+        if (!remaining.isEmpty()) {
+            tooltip.append(Component.literal("\n剩余: " + remaining).withStyle(ChatFormatting.GRAY));
+        }
+        if (candy != null && candy > 0) {
+            tooltip.append(Component.literal("\nPet Candy: " + candy + "/10").withStyle(ChatFormatting.YELLOW));
+        }
+
+        tooltip.append(Component.literal("\nUUID: " + listing.uuid()).withStyle(ChatFormatting.DARK_GRAY));
+        return tooltip;
     }
 
     public static String coins(long value) {
