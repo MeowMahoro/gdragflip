@@ -2,6 +2,7 @@ package net.gdragflip.chat;
 
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.gdragflip.analysis.GdragAnalysis;
+import net.gdragflip.analysis.GdragCustom;
 import net.gdragflip.analysis.GdragListing;
 import net.gdragflip.analysis.GdragOpportunity;
 import net.minecraft.ChatFormatting;
@@ -28,7 +29,7 @@ public final class ChatReport {
     }
 
     public static void send(FabricClientCommandSource source, GdragAnalysis analysis, int limit,
-                            Map<String, Integer> candyUsed) {
+                            Map<String, Integer> candyUsed, GdragCustom custom) {
         source.sendFeedback(info("扫描 %d 条挂单，其中 %d 条 Lvl100+（Lvl200 %d 条）".formatted(
                 analysis.scanned(), analysis.eligibleCount(), analysis.level200Count()), ChatFormatting.GRAY));
 
@@ -64,6 +65,24 @@ public final class ChatReport {
                     ChatFormatting.GREEN));
             print(source, below, Math.min(limit, below.size()), candyUsed);
         }
+
+        if (custom != null) {
+            source.sendFeedback(customLine(custom, analysis.ranked().size()));
+        }
+    }
+
+    /** 用户输入的假设挂单：蓝色单行，给出综合排名。 */
+    private static Component customLine(GdragCustom custom, int total) {
+        MutableComponent line = Component.literal("[自定义] ").withStyle(ChatFormatting.BLUE)
+                .append(Component.literal("#" + custom.rank() + "/" + total).withStyle(ChatFormatting.BLUE))
+                .append(Component.literal("  Lvl " + custom.level()).withStyle(ChatFormatting.BLUE))
+                .append(Component.literal("  " + coins(custom.price())).withStyle(ChatFormatting.BLUE))
+                .append(Component.literal("  " + signedCoins(custom.profit())).withStyle(ChatFormatting.BLUE));
+
+        return line.withStyle(style -> style.withHoverEvent(new HoverEvent.ShowText(
+                Component.literal("理论价: " + String.format(Locale.ROOT, "%,d", custom.expectedPrice()) + " coins")
+                        .append(Component.literal("\n利润率: " + signedPercent(custom.roi()))
+                                .withStyle(ChatFormatting.GRAY)))));
     }
 
     /** 与 send 展示的条目保持一致，供命令层提前查询 pet candy 状态。 */

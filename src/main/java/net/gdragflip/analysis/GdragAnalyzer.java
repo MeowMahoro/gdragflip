@@ -81,6 +81,30 @@ public final class GdragAnalyzer {
                 base, target200, avgPerLevel, ranked);
     }
 
+    /**
+     * 评估一个假设挂单（等级 + 价格）在当前市场中的表现与排名。
+     * 数据不足（没有基准价）时返回 null。
+     */
+    public static GdragCustom evaluate(GdragAnalysis analysis, int level, long price) {
+        if (analysis == null || !analysis.hasPricing() || price <= 0) {
+            return null;
+        }
+
+        int clampedLevel = Math.max(MIN_LEVEL, Math.min(MAX_LEVEL, level));
+        long expected = Math.round(analysis.base().price()
+                + (clampedLevel - analysis.base().level()) * analysis.avgPerLevel());
+        long profit = expected - price;
+        double roi = profit / (double) price;
+
+        int rank = 1;
+        for (GdragOpportunity opportunity : analysis.ranked()) {
+            if (opportunity.profit() > profit) {
+                rank++;
+            }
+        }
+        return new GdragCustom(clampedLevel, price, expected, profit, roi, rank);
+    }
+
     private static GdragListing toListing(CoflAuction auction) {
         if (!auction.bin() || auction.price() <= 0) {
             return null;
