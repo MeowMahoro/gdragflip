@@ -2,6 +2,7 @@ package net.gdragflip.command;
 
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
@@ -9,10 +10,12 @@ import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.gdragflip.GdragFlipMod;
 import net.gdragflip.analysis.GdragAnalysis;
 import net.gdragflip.analysis.GdragAnalyzer;
+import net.gdragflip.analysis.GdragCustom;
 import net.gdragflip.analysis.GdragOpportunity;
 import net.gdragflip.chat.ChatReport;
 import net.gdragflip.cofl.CoflAuction;
 import net.gdragflip.cofl.CoflClient;
+import net.gdragflip.util.PriceParser;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.commands.CommandBuildContext;
@@ -25,7 +28,11 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** /gdrag [limit] —— 查询并分析当前金龙挂单。 */
+/**
+ * /gdrag [条数]                  —— 查看当前排名
+ * /gdrag <等级> <价格>           —— 额外评估一个假设挂单（如 /gdrag 125 660m）
+ * /gdrag calculate <等级> <价格> —— 同上，显式形式
+ */
 public final class GdragCommand {
     private static final int DEFAULT_LIMIT = 10;
     private static final int MAX_LIMIT = 50;
@@ -50,18 +57,51 @@ public final class GdragCommand {
 
     private static LiteralArgumentBuilder<FabricClientCommandSource> build(String name) {
         return ClientCommands.literal(name)
-                .executes(context -> execute(context, DEFAULT_LIMIT))
-                .then(ClientCommands.argument("limit", IntegerArgumentType.integer(1, MAX_LIMIT))
-                        .executes(context -> execute(context, IntegerArgumentType.getInteger(context, "limit"))));
+                .executes(context -> execute(context, DEFAULT_LIMIT, null))
+                // 显式形式：/gdrag calculate 125 660m
+                .then(ClientCommands.literal("calculate")
+                        .then(ClientCommands.argument("level",
+                                        IntegerArgumentType.integer(GdragAnalyzer.MIN_LEVEL, GdragAnalyzer.MAX_LEVEL))
+                                .then(ClientCommands.argument("price", StringArgumentType.word())
+                                        .executes(context -> calculate(context,
+                                                IntegerArgumentType.getInteger(context, "level"),
+                                                StringArgumentType.getString(context, "price"))))))
+                // 单参数：/gdrag 20 = 条数；/gdrag 125 660m 的两个参数 = 等级 + 价格
+                .then(ClientCommands.argument("limitOrLevel",
+                                IntegerArgumentType.integer(1, GdragAnalyzer.MAX_LEVEL))
+                        .executes(context -> {
+                            int value = IntegerArgumentType.getInteger(context, "limitOrLevel");
+                            if (value <= MAX_LIMIT) {
+                                return execute(context, value, null);
+                            }
+                            context.getSource().sendFeedback(ChatReport.info(
+                                    "用法：/gdrag <条数> 或 /gdrag <等级> <价格>（例如 /gdrag 125 660m）",
+                                    ChatFormatting.RED));
+                            return 0;
+                        })
+                        .then(ClientCommands.argument("price", StringArgumentType.word())
+                                .executes(context -> calculate(context,
+                                        IntegerArgumentType.getInteger(context, "limitOrLevel"),
+                                        StringArgumentType.getString(context, "price")))));
     }
 
-    private static int execute(CommandContext<FabricClientCommandSource> context, int limit) {
+    private static int calculate(CommandContext<FabricClientCommandSource> context, int level, String priceText) {
+        Long price = PriceParser.parse(priceText);
+        if (price == null) {
+            context.getSource().sendFeedback(ChatReport.info(
+                    "价格格式无效，示例：660m、1.2b、660000000", ChatFormatting.RED));
+            return 0;
+        }
+        return execute(context, DEFAULT_LIMIT, new CustomRequest(level, price));
+    }
+
+    private static int execute(CommandContext<FabricClientCommandSource> context, int limit, CustomRequest custom) {
         FabricClientCommandSource source = context.getSource();
         long now = System.currentTimeMillis();
 
         GdragAnalysis cached = lastAnalysis;
         if (cached != null && now - lastAnalysisAt <= CACHE_MILLIS) {
-            CompletableFuture.runAsync(() -> sendWithCandy(source, cached, limit));
+            CompletableFuture.runAsync(() -> sendWithCandy(source, cached, limit, custom));
             return 1;
         }
 
@@ -78,7 +118,7 @@ public final class GdragCommand {
                 GdragAnalysis analysis = GdragAnalyzer.analyze(auctions);
                 lastAnalysis = analysis;
                 lastAnalysisAt = System.currentTimeMillis();
-                sendWithCandy(source, analysis, limit);
+                sendWithCandy(source, analysis, limit, custom);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 error(source, "查询被中断");
@@ -97,7 +137,8 @@ public final class GdragCommand {
      * 对将要展示的条目查询 pet candy 使用次数，再回主线程输出。
      * 未使用过（或查询失败）的条目不携带标记。
      */
-    private static void sendWithCandy(FabricClientCommandSource source, GdragAnalysis analysis, int limit) {
+    private static void sendWithCandy(FabricClientCommandSource source, GdragAnalysis analysis, int limit,
+                                      CustomRequest custom) {
         Map<String, Integer> candyUsed = new HashMap<>();
         List<String> missing = new ArrayList<>();
 
@@ -129,11 +170,19 @@ public final class GdragCommand {
             }
         }
 
-        Minecraft.getInstance().execute(() -> ChatReport.send(source, analysis, limit, candyUsed));
+        GdragCustom customEntry = custom == null
+                ? null
+                : GdragAnalyzer.evaluate(analysis, custom.level(), custom.price());
+
+        Minecraft.getInstance().execute(() ->
+                ChatReport.send(source, analysis, limit, candyUsed, customEntry));
     }
 
     private static void error(FabricClientCommandSource source, String message) {
         Minecraft.getInstance().execute(() ->
                 source.sendFeedback(ChatReport.info("查询失败：" + message, ChatFormatting.RED)));
+    }
+
+    private record CustomRequest(int level, long price) {
     }
 }
