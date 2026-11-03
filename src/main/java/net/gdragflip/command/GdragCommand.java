@@ -9,6 +9,7 @@ import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.gdragflip.GdragFlipMod;
 import net.gdragflip.analysis.GdragAnalysis;
 import net.gdragflip.analysis.GdragAnalyzer;
+import net.gdragflip.analysis.GdragOpportunity;
 import net.gdragflip.chat.ChatReport;
 import net.gdragflip.cofl.CoflAuction;
 import net.gdragflip.cofl.CoflClient;
@@ -16,8 +17,11 @@ import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.commands.CommandBuildContext;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** /gdrag [limit] —— 查询并分析当前金龙挂单。 */
@@ -29,6 +33,11 @@ public final class GdragCommand {
     private static final AtomicBoolean FETCHING = new AtomicBoolean(false);
     private static volatile GdragAnalysis lastAnalysis;
     private static volatile long lastAnalysisAt;
+
+    /** 宠物糖果状态对同一条拍卖不会变，按 UUID 缓存，避免重复查详情。 */
+    private static final Map<String, Integer> CANDY_CACHE = new ConcurrentHashMap<>();
+    /** 详情接口是逐条请求，限制单次最多查多少条，避免长等待和触发限流。 */
+    private static final int MAX_CANDY_LOOKUPS = 10;
 
     private GdragCommand() {
     }
@@ -51,7 +60,7 @@ public final class GdragCommand {
 
         GdragAnalysis cached = lastAnalysis;
         if (cached != null && now - lastAnalysisAt <= CACHE_MILLIS) {
-            ChatReport.send(source, cached, limit);
+            CompletableFuture.runAsync(() -> sendWithCandy(source, cached, limit));
             return 1;
         }
 
@@ -68,7 +77,7 @@ public final class GdragCommand {
                 GdragAnalysis analysis = GdragAnalyzer.analyze(auctions);
                 lastAnalysis = analysis;
                 lastAnalysisAt = System.currentTimeMillis();
-                Minecraft.getInstance().execute(() -> ChatReport.send(source, analysis, limit));
+                sendWithCandy(source, analysis, limit);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 error(source, "查询被中断");
@@ -81,6 +90,37 @@ public final class GdragCommand {
         });
 
         return 1;
+    }
+
+    /**
+     * 对将要展示的条目查询 pet candy 使用次数，再回主线程输出。
+     * 未使用过（或查询失败）的条目不携带标记。
+     */
+    private static void sendWithCandy(FabricClientCommandSource source, GdragAnalysis analysis, int limit) {
+        Map<String, Integer> candyUsed = new HashMap<>();
+        int lookups = 0;
+
+        for (GdragOpportunity opportunity : ChatReport.selectForDisplay(analysis, limit)) {
+            if (lookups++ >= MAX_CANDY_LOOKUPS) {
+                break;
+            }
+
+            String uuid = opportunity.listing().uuid();
+            Integer cached = CANDY_CACHE.get(uuid);
+            if (cached == null) {
+                int used = CoflClient.fetchCandyUsed(uuid);
+                if (used >= 0) {
+                    CANDY_CACHE.put(uuid, used);
+                    cached = used;
+                }
+            }
+
+            if (cached != null && cached > 0) {
+                candyUsed.put(uuid, cached);
+            }
+        }
+
+        Minecraft.getInstance().execute(() -> ChatReport.send(source, analysis, limit, candyUsed));
     }
 
     private static void error(FabricClientCommandSource source, String message) {

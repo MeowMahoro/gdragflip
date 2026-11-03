@@ -13,6 +13,7 @@ import net.minecraft.network.chat.MutableComponent;
 import java.net.URI;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /** 把分析结果渲染成聊天消息（价格、排名、可点击的查看拍卖按钮）。 */
 public final class ChatReport {
@@ -26,7 +27,8 @@ public final class ChatReport {
                 .append(Component.literal(text).withStyle(color));
     }
 
-    public static void send(FabricClientCommandSource source, GdragAnalysis analysis, int limit) {
+    public static void send(FabricClientCommandSource source, GdragAnalysis analysis, int limit,
+                            Map<String, Integer> candyUsed) {
         source.sendFeedback(info("扫描 %d 条挂单，其中 %d 条 Lvl100+（Lvl200 %d 条）".formatted(
                 analysis.scanned(), analysis.eligibleCount(), analysis.level200Count()), ChatFormatting.GRAY));
 
@@ -56,21 +58,34 @@ public final class ChatReport {
             int fallback = Math.min(3, analysis.ranked().size());
             source.sendFeedback(info("没有低于理论价的挂单；下面是最接近的 %d 条：".formatted(fallback),
                     ChatFormatting.YELLOW));
-            print(source, analysis.ranked(), fallback);
+            print(source, analysis.ranked(), fallback, candyUsed);
         } else {
             source.sendFeedback(info("低于理论价 %d 条（按利润降序）：".formatted(below.size()),
                     ChatFormatting.GREEN));
-            print(source, below, Math.min(limit, below.size()));
+            print(source, below, Math.min(limit, below.size()), candyUsed);
         }
     }
 
-    private static void print(FabricClientCommandSource source, List<GdragOpportunity> opportunities, int count) {
+    /** 与 send 展示的条目保持一致，供命令层提前查询 pet candy 状态。 */
+    public static List<GdragOpportunity> selectForDisplay(GdragAnalysis analysis, int limit) {
+        if (!analysis.hasPricing() || analysis.ranked().isEmpty()) {
+            return List.of();
+        }
+        List<GdragOpportunity> below = analysis.belowExpected();
+        if (!below.isEmpty()) {
+            return below.subList(0, Math.min(limit, below.size()));
+        }
+        return analysis.ranked().subList(0, Math.min(3, analysis.ranked().size()));
+    }
+
+    private static void print(FabricClientCommandSource source, List<GdragOpportunity> opportunities,
+                              int count, Map<String, Integer> candyUsed) {
         for (int i = 0; i < count; i++) {
-            source.sendFeedback(line(i + 1, opportunities.get(i)));
+            source.sendFeedback(line(i + 1, opportunities.get(i), candyUsed));
         }
     }
 
-    private static Component line(int rank, GdragOpportunity opportunity) {
+    private static Component line(int rank, GdragOpportunity opportunity, Map<String, Integer> candyUsed) {
         GdragListing listing = opportunity.listing();
         ChatFormatting profitColor = opportunity.profit() > 0 ? ChatFormatting.GREEN : ChatFormatting.GRAY;
 
@@ -84,6 +99,11 @@ public final class ChatReport {
         String remaining = remaining(listing.endEpochMillis());
         if (!remaining.isEmpty()) {
             line.append(Component.literal("  剩 " + remaining).withStyle(ChatFormatting.DARK_GRAY));
+        }
+
+        Integer candy = candyUsed.get(listing.uuid());
+        if (candy != null && candy > 0) {
+            line.append(Component.literal("  " + candy + "/10 pet candy used").withStyle(ChatFormatting.YELLOW));
         }
 
         line.append(auctionButton(listing.uuid()))
