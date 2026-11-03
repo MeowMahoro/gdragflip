@@ -105,6 +105,45 @@ public final class CoflClient {
         return auctions;
     }
 
+    /**
+     * 查询单条拍卖的 pet candy 使用次数（上限 10）。
+     *
+     * <p>列表接口（active/filter）不返回 NBT，只能对要展示的条目逐条查详情。
+     * 失败返回 -1（未知），调用方据此不标注。</p>
+     */
+    public static int fetchCandyUsed(String uuid) {
+        try {
+            JsonObject root = getJson("auction/" + uuid);
+
+            JsonObject flatNbt = root.getAsJsonObject("flatNbt");
+            if (flatNbt != null) {
+                String value = string(flatNbt, "candyUsed");
+                if (!value.isEmpty()) {
+                    return Integer.parseInt(value);
+                }
+            }
+
+            JsonObject nbtData = root.getAsJsonObject("nbtData");
+            if (nbtData != null) {
+                JsonObject data = nbtData.getAsJsonObject("data");
+                if (data != null) {
+                    String petInfo = string(data, "petInfo");
+                    if (!petInfo.isEmpty()) {
+                        JsonObject info = GSON.fromJson(petInfo, JsonObject.class);
+                        if (info != null && info.has("candyUsed")) {
+                            return info.get("candyUsed").getAsInt();
+                        }
+                    }
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            System.err.println("[gdragflip] candy lookup failed: " + uuid + " -> " + e.getMessage());
+        }
+        return -1;
+    }
+
     private static JsonObject getJson(String path) throws IOException, InterruptedException {
         IOException lastError = null;
         List<String> bases = orderedBases();
