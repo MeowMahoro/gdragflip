@@ -20,8 +20,10 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -55,6 +57,9 @@ public final class CoflClient {
                     + "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 GdragFlip/1.0";
     private static final int PAGE_SIZE = 100;
     private static final int MAX_PAGES = 10;
+
+    /** 批量 curl 的多 URL 输出分隔符。 */
+    private static final String SEPARATOR = "\n@@GDSEP@@\n";
 
     private static final Gson GSON = new Gson();
     private static final HttpClient HTTP = HttpClient.newBuilder()
@@ -106,40 +111,128 @@ public final class CoflClient {
     }
 
     /**
-     * 查询单条拍卖的 pet candy 使用次数（上限 10）。
-     *
-     * <p>列表接口（active/filter）不返回 NBT，只能对要展示的条目逐条查详情。
-     * 失败返回 -1（未知），调用方据此不标注。</p>
+     * 查询单条拍卖的 pet candy 使用次数（上限 10）。失败返回 -1（未知）。
      */
     public static int fetchCandyUsed(String uuid) {
         try {
-            JsonObject root = getJson("auction/" + uuid);
-
-            JsonObject flatNbt = root.getAsJsonObject("flatNbt");
-            if (flatNbt != null) {
-                String value = string(flatNbt, "candyUsed");
-                if (!value.isEmpty()) {
-                    return Integer.parseInt(value);
-                }
-            }
-
-            JsonObject nbtData = root.getAsJsonObject("nbtData");
-            if (nbtData != null) {
-                JsonObject data = nbtData.getAsJsonObject("data");
-                if (data != null) {
-                    String petInfo = string(data, "petInfo");
-                    if (!petInfo.isEmpty()) {
-                        JsonObject info = GSON.fromJson(petInfo, JsonObject.class);
-                        if (info != null && info.has("candyUsed")) {
-                            return info.get("candyUsed").getAsInt();
-                        }
-                    }
-                }
-            }
+            return candyFromDetail(getJson("auction/" + uuid));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } catch (Exception e) {
             System.err.println("[gdragflip] candy lookup failed: " + uuid + " -> " + e.getMessage());
+        }
+        return -1;
+    }
+
+    /**
+     * 批量查询 pet candy：一个 curl 进程顺序请求多个详情 URL，复用同一条连接。
+     *
+     * <p>逐条单独起进程时每条都要重新做一次 TLS 握手，实测 10 条约 22s；
+     * 批量复用连接后约 8s。并发请求反而会被 Cloudflare 限速，故不用并发。</p>
+     */
+    public static Map<String, Integer> fetchCandyUsedBatch(List<String> uuids) {
+        if (uuids == null || uuids.isEmpty()) {
+            return Map.of();
+        }
+        for (String base : orderedBases()) {
+            Map<String, Integer> result = fetchCandyUsedBatch(base, uuids);
+            if (!result.isEmpty()) {
+                preferredBase = base;
+                return result;
+            }
+        }
+        return Map.of();
+    }
+
+    private static Map<String, Integer> fetchCandyUsedBatch(String base, List<String> uuids) {
+        List<String> command = new ArrayList<>(uuids.size() + 12);
+        command.add(curlExecutable());
+        command.add("-sS");
+        command.add("--compressed");
+        command.add("--max-time");
+        command.add("90");
+        command.add("-A");
+        command.add(USER_AGENT);
+        command.add("-w");
+        command.add(SEPARATOR);
+        for (String uuid : uuids) {
+            command.add(base + "auction/" + uuid);
+        }
+
+        try {
+            Process process = new ProcessBuilder(command).start();
+            CompletableFuture<byte[]> stdout = CompletableFuture.supplyAsync(() -> readAll(process.getInputStream()));
+            CompletableFuture<byte[]> stderr = CompletableFuture.supplyAsync(() -> readAll(process.getErrorStream()));
+
+            if (!process.waitFor(120, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                return Map.of();
+            }
+
+            String output = new String(stdout.join(), StandardCharsets.UTF_8);
+            String error = new String(stderr.join(), StandardCharsets.UTF_8).strip();
+            if (!error.isEmpty()) {
+                System.err.println("[gdragflip] candy batch curl: " + shorten(error, 200));
+            }
+
+            String[] parts = output.split(SEPARATOR, -1);
+            Map<String, Integer> result = new HashMap<>();
+            for (int i = 0; i < uuids.size() && i < parts.length; i++) {
+                String body = parts[i].strip();
+                if (body.isEmpty()) {
+                    continue;
+                }
+                try {
+                    int candy = candyFromDetail(GSON.fromJson(body, JsonObject.class));
+                    if (candy >= 0) {
+                        result.put(uuids.get(i), candy);
+                    }
+                } catch (RuntimeException e) {
+                    // 单条失败（例如 Cloudflare 的 HTML）不影响其他条目
+                }
+            }
+            return result;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            System.err.println("[gdragflip] candy batch failed: " + e.getMessage());
+        }
+        return Map.of();
+    }
+
+    private static int candyFromDetail(JsonObject root) {
+        if (root == null) {
+            return -1;
+        }
+
+        JsonObject flatNbt = root.getAsJsonObject("flatNbt");
+        if (flatNbt != null) {
+            String value = string(flatNbt, "candyUsed");
+            if (!value.isEmpty()) {
+                try {
+                    return Integer.parseInt(value);
+                } catch (NumberFormatException ignored) {
+                    // 继续尝试 petInfo
+                }
+            }
+        }
+
+        JsonObject nbtData = root.getAsJsonObject("nbtData");
+        if (nbtData != null) {
+            JsonObject data = nbtData.getAsJsonObject("data");
+            if (data != null) {
+                String petInfo = string(data, "petInfo");
+                if (!petInfo.isEmpty()) {
+                    try {
+                        JsonObject info = GSON.fromJson(petInfo, JsonObject.class);
+                        if (info != null && info.has("candyUsed")) {
+                            return info.get("candyUsed").getAsInt();
+                        }
+                    } catch (RuntimeException ignored) {
+                        return -1;
+                    }
+                }
+            }
         }
         return -1;
     }

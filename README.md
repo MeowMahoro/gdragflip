@@ -26,7 +26,7 @@ Hypixel SkyBlock 客户端 Fabric mod：分析拍卖行里 **100 级以上的 Go
 - `[拍卖]`：点击执行 `/viewauction <uuid>`，直接在游戏里打开该拍卖（Hypixel 的查看拍卖命令为 `/viewauction`，不是 `/auction`）。
 - `[Cofl]`：点击打开 `https://sky.coflnet.com/auction/<uuid>`。
 - 鼠标悬停可看卖家、精确价格与拍卖 UUID。
-- 如果该金龙使用过 pet candy，行尾会标注 `N/10 pet candy used`；未使用过的不标注（对展示的条目逐条查详情，单次最多 10 条，结果按 UUID 缓存）。
+- 如果该金龙使用过 pet candy，行尾会标注 `(N/10)`；未使用过的不标注。详情请求合并为一次 curl 调用（复用连接），单次最多 10 条，结果按 UUID 缓存。
 
 ## 算法
 

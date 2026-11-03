@@ -17,6 +17,7 @@ import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.commands.CommandBuildContext;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -98,8 +99,9 @@ public final class GdragCommand {
      */
     private static void sendWithCandy(FabricClientCommandSource source, GdragAnalysis analysis, int limit) {
         Map<String, Integer> candyUsed = new HashMap<>();
-        int lookups = 0;
+        List<String> missing = new ArrayList<>();
 
+        int lookups = 0;
         for (GdragOpportunity opportunity : ChatReport.selectForDisplay(analysis, limit)) {
             if (lookups++ >= MAX_CANDY_LOOKUPS) {
                 break;
@@ -107,16 +109,23 @@ public final class GdragCommand {
 
             String uuid = opportunity.listing().uuid();
             Integer cached = CANDY_CACHE.get(uuid);
-            if (cached == null) {
-                int used = CoflClient.fetchCandyUsed(uuid);
-                if (used >= 0) {
-                    CANDY_CACHE.put(uuid, used);
-                    cached = used;
+            if (cached != null) {
+                if (cached > 0) {
+                    candyUsed.put(uuid, cached);
                 }
+            } else {
+                missing.add(uuid);
             }
+        }
 
-            if (cached != null && cached > 0) {
-                candyUsed.put(uuid, cached);
+        if (!missing.isEmpty()) {
+            // 一次 curl 进程请求全部详情（连接复用），避免逐条重新握手。
+            Map<String, Integer> fetched = CoflClient.fetchCandyUsedBatch(missing);
+            for (Map.Entry<String, Integer> entry : fetched.entrySet()) {
+                CANDY_CACHE.put(entry.getKey(), entry.getValue());
+                if (entry.getValue() > 0) {
+                    candyUsed.put(entry.getKey(), entry.getValue());
+                }
             }
         }
 
