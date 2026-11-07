@@ -8,6 +8,7 @@ import net.minecraft.client.Minecraft;
  */
 public final class LevelingAssistant {
     private static final int SAMPLE_INTERVAL_TICKS = 5;
+    private static final int SAVE_INTERVAL_TICKS = 1200;
 
     private static volatile PetWidgetReader.Snapshot snapshot = PetWidgetReader.Snapshot.MISSING;
     private static int ticks;
@@ -28,7 +29,12 @@ public final class LevelingAssistant {
 
         ExpShareTracker.tick(client);
 
-        if (ticks++ % SAMPLE_INTERVAL_TICKS != 0) {
+        ticks++;
+        // 每分钟落盘一次，避免异常退出丢数据（累计值本身不会自动清零）。
+        if (ticks % SAVE_INTERVAL_TICKS == 0) {
+            LevelingSession.saveIfDirty();
+        }
+        if (ticks % SAMPLE_INTERVAL_TICKS != 0) {
             return;
         }
         PetWidgetReader.Snapshot read = PetWidgetReader.read(client);
