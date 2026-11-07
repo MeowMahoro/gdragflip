@@ -2,15 +2,21 @@ package net.gdragflip.leveling;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import net.gdragflip.analysis.PetXpCurve;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.chat.Component;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.component.ItemLore;
 
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** 从物品 NBT 里取 Hypixel 的 petInfo（兼容直接挂在根上或 ExtraAttributes 下）。 */
 public final class PetNbt {
     private static final Gson GSON = new Gson();
+    private static final Pattern LEVEL_PATTERN = Pattern.compile("Lvl\\s*([\\d,]+)");
 
     private PetNbt() {
     }
@@ -51,6 +57,56 @@ public final class PetNbt {
             return (long) info.get("exp").getAsDouble();
         } catch (RuntimeException e) {
             return -1L;
+        }
+    }
+
+    /** 物品 lore 的纯文本（换行拼接）。 */
+    public static String loreText(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return "";
+        }
+        ItemLore lore = stack.get(DataComponents.LORE);
+        if (lore == null) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder();
+        for (Component line : lore.lines()) {
+            builder.append(line.getString()).append('\n');
+        }
+        return builder.toString();
+    }
+
+    /** 宠物等级：优先物品名 [Lvl N]，其次 lore，最后用金龙经验反算。 */
+    public static int level(ItemStack stack, JsonObject info) {
+        int fromName = levelFromText(stack.getHoverName().getString());
+        if (fromName > 0) {
+            return fromName;
+        }
+        int fromLore = levelFromText(loreText(stack));
+        if (fromLore > 0) {
+            return fromLore;
+        }
+        if (info != null && "GOLDEN_DRAGON".equalsIgnoreCase(type(info))) {
+            long exp = exp(info);
+            if (exp > 0) {
+                return PetXpCurve.levelOf(exp);
+            }
+        }
+        return 0;
+    }
+
+    private static int levelFromText(String text) {
+        if (text == null || text.isEmpty()) {
+            return 0;
+        }
+        Matcher matcher = LEVEL_PATTERN.matcher(text);
+        if (!matcher.find()) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(matcher.group(1).replace(",", ""));
+        } catch (NumberFormatException e) {
+            return 0;
         }
     }
 

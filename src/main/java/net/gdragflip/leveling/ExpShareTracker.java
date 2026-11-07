@@ -1,35 +1,34 @@
 package net.gdragflip.leveling;
 
-import com.google.gson.Gson;
 import com.google.gson.JsonObject;
-import net.gdragflip.GdragFlipMod;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
-import net.minecraft.core.component.DataComponents;
-import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.item.ItemStack;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
+import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 读取 Exp Sharing 菜单里的分享槽宠物。
+ * 读取 Exp Sharing 菜单里的分享槽。
  *
- * <p>与 Skysoft 的做法一致：打开 {@code /pets → Exp Sharing} 时读取槽位 30/31/32 的物品 NBT，
- * 没有实时接口。关闭界面后沿用上次读取结果。</p>
+ * <p>槽位有三格（30/31/32），但只有 Diana 的 Sharing is Caring 才会把 #2/#3 解锁；
+ * 未生效的槽位物品 lore 会写 {@code DISABLED}，这类槽位直接忽略、也不计入槽位数。</p>
+ *
+ * <p>生效槽位的 lore 会写明真实分享比例，例如
+ * {@code This pet is currently gaining 27% of your equipped pet's Exp}，
+ * 直接读这个百分比比用配置猜测准确。</p>
  */
 public final class ExpShareTracker {
-    private static final Pattern LEVEL_PATTERN = Pattern.compile("\\[Lvl ([\\d,]+)]");
-    private static final Gson GSON = new Gson();
+    private static final Pattern RATE_PATTERN = Pattern.compile("([\\d.]+)\\s*%\\s+of");
     private static final int[] SLOTS = {30, 31, 32};
     private static final String MENU_TITLE = "Exp Sharing";
 
     private static volatile List<SharePet> pets = List.of();
-    /** 读取到的已开启槽位数量（0 = 还没读过界面）。 */
+    /** 已开启（非 DISABLED）的槽位数量；0 = 还没读过界面。 */
     private static volatile int observedSlots;
     private static int cooldown;
 
@@ -37,12 +36,13 @@ public final class ExpShareTracker {
     }
 
     /**
-     * @param name  宠物名（已去掉 [Lvl N] 前缀）
-     * @param level 物品名里显示的等级
-     * @param exp   物品 NBT 里的累计经验（未知为 -1）
-     * @param type  宠物内部类型（如 GOLDEN_DRAGON），未知为空串
+     * @param name        宠物名（已去掉 [Lvl N] 前缀）
+     * @param level       宠物等级（名字/lore/经验反算）
+     * @param exp         物品 NBT 里的累计经验，未知为 -1
+     * @param type        宠物内部类型（如 GOLDEN_DRAGON），未知为空串
+     * @param ratePercent 该槽位的分享比例（%），未知为 -1
      */
-    public record SharePet(String name, int level, long exp, String type) {
+    public record SharePet(String name, int level, long exp, String type, double ratePercent) {
     }
 
     public static List<SharePet> pets() {
@@ -77,7 +77,8 @@ public final class ExpShareTracker {
 
         AbstractContainerMenu menu = screen.getMenu();
         List<SharePet> read = new ArrayList<>();
-        int unlocked = 0;
+        int enabled = 0;
+
         for (int slot : SLOTS) {
             if (slot >= menu.slots.size()) {
                 continue;
@@ -86,82 +87,42 @@ public final class ExpShareTracker {
             if (stack.isEmpty()) {
                 continue;
             }
-            String hoverName = cleanName(stack.getHoverName().getString());
-            // 未解锁的槽位一般是 "Locked"/"???" 之类的占位物，不计入。
-            if (hoverName.toLowerCase(java.util.Locale.ROOT).contains("locked")) {
+
+            String lore = PetNbt.loreText(stack).toLowerCase(Locale.ROOT);
+            // DISABLED（Diana 未触发）与 Locked 的槽位都不展示。
+            if (lore.contains("disabled") || lore.contains("locked")) {
                 continue;
             }
-            unlocked++;
+            enabled++;
+
+            String hoverName = stack.getHoverName().getString().replaceAll("§.", "");
             if (hoverName.contains("No pet")) {
                 continue;
             }
-            JsonObject info = petInfo(stack);
-            long exp = -1L;
-            String type = "";
-            if (info != null) {
-                if (info.has("exp")) {
-                    exp = (long) info.get("exp").getAsDouble();
-                }
-                if (info.has("type")) {
-                    type = info.get("type").getAsString();
-                }
-            }
-            read.add(new SharePet(hoverName, levelOf(hoverName), exp, type));
+
+            JsonObject info = PetNbt.petInfo(stack);
+            long exp = info == null ? -1L : PetNbt.exp(info);
+            String type = info == null ? "" : PetNbt.type(info);
+            int level = PetNbt.level(stack, info);
+            double rate = parseRate(lore);
+
+            read.add(new SharePet(PetNbt.name(stack), level, exp, type, rate));
         }
+
         pets = List.copyOf(read);
-        observedSlots = unlocked;
+        observedSlots = enabled;
     }
 
-    private static String cleanName(String hoverName) {
-        return hoverName.replaceAll("\\[Lvl [\\d,]+]\\s*", "").replace("✦", "").trim();
-    }
-
-    private static int levelOf(String hoverName) {
-        Matcher matcher = LEVEL_PATTERN.matcher(hoverName);
+    /** 从 lore "… ganing 27% of your equipped pet's Exp" 里取分享比例。 */
+    private static double parseRate(String lore) {
+        Matcher matcher = RATE_PATTERN.matcher(lore);
         if (!matcher.find()) {
-            return 0;
+            return -1.0;
         }
         try {
-            return Integer.parseInt(matcher.group(1).replace(",", ""));
+            return Double.parseDouble(matcher.group(1));
         } catch (NumberFormatException e) {
-            return 0;
-        }
-    }
-
-    private static JsonObject petInfo(ItemStack stack) {
-        CompoundTag tag = stack.get(DataComponents.CUSTOM_DATA) == null
-                ? null
-                : stack.get(DataComponents.CUSTOM_DATA).copyTag();
-        if (tag == null) {
-            return null;
-        }
-
-        String json = readString(tag, "petInfo");
-        if (json.isEmpty()) {
-            Optional<CompoundTag> extra = tag.getCompound("ExtraAttributes");
-            if (extra.isPresent()) {
-                json = readString(extra.get(), "petInfo");
-            }
-        }
-        if (json.isEmpty()) {
-            return null;
-        }
-        try {
-            return GSON.fromJson(json, JsonObject.class);
-        } catch (RuntimeException e) {
-            GdragFlipMod.LOGGER.debug("petInfo 解析失败", e);
-            return null;
-        }
-    }
-
-    private static String readString(CompoundTag tag, String key) {
-        if (!tag.contains(key)) {
-            return "";
-        }
-        try {
-            return tag.getString(key).orElse("");
-        } catch (RuntimeException e) {
-            return "";
+            return -1.0;
         }
     }
 }

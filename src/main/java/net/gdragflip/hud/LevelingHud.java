@@ -45,12 +45,33 @@ public final class LevelingHud implements HudElement {
     /** 在指定坐标绘制 HUD，返回占用高度。HUD 本体与位置编辑界面共用。 */
     public static int render(GuiGraphicsExtractor graphics, Minecraft client, int x, int y) {
         List<Component> lines = buildLines(GdragConfig.get());
+        if (lines.isEmpty()) {
+            return 0;
+        }
+
+        int width = 0;
+        for (Component line : lines) {
+            width = Math.max(width, client.font.width(line));
+        }
+        int height = lines.size() * (client.font.lineHeight + LINE_GAP);
+        // 半透明底框：避免亮色背景下文字看不清。
+        graphics.fill(x - 3, y - 3, x + width + 3, y + height, 0x99000000);
+
         int cursor = y;
         for (Component line : lines) {
             graphics.text(client.font, line, x, cursor, 0xFFFFFFFF);
             cursor += client.font.lineHeight + LINE_GAP;
         }
         return cursor - y;
+    }
+
+    private static String formatRate(double rate) {
+        if (rate <= 0) {
+            return "";
+        }
+        return rate == Math.floor(rate)
+                ? (int) rate + "%"
+                : String.format(java.util.Locale.ROOT, "%.1f%%", rate);
     }
 
     public static List<Component> buildLines(GdragConfig config) {
@@ -99,11 +120,25 @@ public final class LevelingHud implements HudElement {
 
         boolean shareEnabled = config.expShareEnabled;
         boolean shareKnown = shareEnabled && ExpShareTracker.hasData();
-        int slots = shareEnabled
-                ? (shareKnown ? Math.max(1, ExpShareTracker.observedSlots()) : config.expShareSlots)
-                : 0;
-        long perPetXp = slots > 0 ? Math.round(sessionXp * config.expShareFactorPercent / 100.0) : 0L;
-        long shareTotalXp = perPetXp * slots;
+        List<ExpShareTracker.SharePet> sharePets = shareEnabled ? ExpShareTracker.pets() : List.of();
+        int slots = shareEnabled ? (shareKnown ? Math.max(1, ExpShareTracker.observedSlots()) : 0) : 0;
+
+        // 优先用每个槽位 lore 里写的真实比例；读不到时才退回配置系数。
+        long shareTotalXp = 0L;
+        List<Long> perPetXp = new ArrayList<>();
+        if (shareEnabled && sessionXp > 0) {
+            if (!sharePets.isEmpty()) {
+                for (ExpShareTracker.SharePet pet : sharePets) {
+                    double rate = pet.ratePercent() > 0 ? pet.ratePercent() : config.expShareFactorPercent;
+                    long xp = Math.round(sessionXp * rate / 100.0);
+                    perPetXp.add(xp);
+                    shareTotalXp += xp;
+                }
+            } else {
+                long xp = Math.round(sessionXp * config.expShareFactorPercent / 100.0);
+                shareTotalXp = xp * Math.max(1, config.expShareSlots);
+            }
+        }
 
         // 不确定来源：地牢内主宠是估算；分享槽在没读过 Exp Sharing 界面时也不确定。
         String mainMark = estimating ? "≈ " : "";
@@ -115,7 +150,7 @@ public final class LevelingHud implements HudElement {
         lines.add(Component.literal("主宠：").withStyle(ChatFormatting.GREEN));
         if (accurateNow) {
             lines.add(Component.literal("  " + PetXpCurve.levelLabel(snapshot.totalExp()))
-                    .withStyle(ChatFormatting.YELLOW));
+                    .withStyle(ChatFormatting.WHITE));
         }
         lines.add(Component.literal("  " + mainMark + "累计 " + signed(sessionXp) + " XP"
                 + (pricePerExp > 0 ? " ｜ " + signed(Math.round(sessionXp * pricePerExp)) + " coins" : ""))
@@ -126,16 +161,19 @@ public final class LevelingHud implements HudElement {
             lines.add(Component.literal("分享槽：").withStyle(ChatFormatting.YELLOW));
             lines.add(Component.literal("  Slot x " + (shareKnown ? slots : "?")
                     + (shareKnown ? "" : "（打开 /pets → Exp Sharing 读取）"))
-                    .withStyle(ChatFormatting.DARK_GRAY));
+                    .withStyle(ChatFormatting.GRAY));
             if (sessionXp > 0) {
                 lines.add(Component.literal("  " + shareMark + signed(shareTotalXp) + " XP"
                         + (pricePerExp > 0 ? " ｜ " + signed(Math.round(shareTotalXp * pricePerExp)) + " coins" : ""))
-                        .withStyle(ChatFormatting.AQUA));
-                List<ExpShareTracker.SharePet> sharePets = ExpShareTracker.pets();
-                for (int i = 0; i < sharePets.size() && i < slots; i++) {
+                        .withStyle(ChatFormatting.WHITE));
+                for (int i = 0; i < sharePets.size(); i++) {
                     ExpShareTracker.SharePet pet = sharePets.get(i);
-                    lines.add(Component.literal("    " + pet.name() + " Lvl " + pet.level()
-                            + "  " + shareMark + signed(perPetXp) + " XP").withStyle(ChatFormatting.DARK_AQUA));
+                    double rate = pet.ratePercent() > 0 ? pet.ratePercent() : config.expShareFactorPercent;
+                    String levelPart = pet.level() > 0 ? " Lvl " + pet.level() : "";
+                    String ratePart = pet.ratePercent() > 0 ? "  " + formatRate(rate) : "";
+                    lines.add(Component.literal("    " + pet.name() + levelPart + ratePart
+                            + "  " + shareMark + signed(perPetXp.get(i)) + " XP")
+                            .withStyle(ChatFormatting.GRAY));
                 }
             }
         }
@@ -152,14 +190,14 @@ public final class LevelingHud implements HudElement {
         } else if (rateReady) {
             total.append(" ｜ ").append(ChatReport.coins(Math.round(totalXp / hours))).append(" XP/h");
         }
-        lines.add(Component.literal(total.toString()).withStyle(ChatFormatting.RED));
+        lines.add(Component.literal(total.toString()).withStyle(ChatFormatting.WHITE));
 
         // 次要信息（时间基准 + 单价）
         String footer = (dungeonBased ? "地牢 " : "累计 ") + duration(baseMillis);
         footer += pricePerExp > 0
                 ? " ｜ 每 1M XP ≈ " + ChatReport.coins(Math.round(pricePerExp * 1_000_000.0)) + " coins"
                 : " ｜ 行情未就绪";
-        lines.add(Component.literal(footer).withStyle(ChatFormatting.DARK_GRAY));
+        lines.add(Component.literal(footer).withStyle(ChatFormatting.GRAY));
 
         return lines;
     }
