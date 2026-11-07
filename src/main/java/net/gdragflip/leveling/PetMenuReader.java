@@ -13,7 +13,7 @@ import net.minecraft.world.item.ItemStack;
 /**
  * 打开 {@code /pets} 菜单时读取「当前出战」金龙的 UUID 与真实经验。
  *
- * <p>两个用途：</p>
+ * <p>用途：</p>
  * <ol>
  *   <li>会话开始时绑定宠物 UUID（{@code /gdrag session start} 后打开菜单即完成绑定）；</li>
  *   <li>之后每次打开菜单都用真实经验校准地牢内的估算值。</li>
@@ -21,8 +21,10 @@ import net.minecraft.world.item.ItemStack;
  */
 public final class PetMenuReader {
     private static final String MENU_TITLE = "Pets";
+    private static final String GOLDEN_DRAGON = "GOLDEN_DRAGON";
     private static int cooldown;
     private static long lastMismatchAt;
+    private static long lastBindWarnAt;
 
     private PetMenuReader() {
     }
@@ -40,8 +42,9 @@ public final class PetMenuReader {
         cooldown = 20;
 
         AbstractContainerMenu menu = screen.getMenu();
-        Pet found = null;
-        Pet fallback = null;
+        Pet activeGolden = null;
+        Pet activeOther = null;
+        Pet goldenFallback = null;
 
         for (int slot = 0; slot < menu.slots.size(); slot++) {
             ItemStack stack = menu.getSlot(slot).getItem();
@@ -49,7 +52,7 @@ public final class PetMenuReader {
                 continue;
             }
             JsonObject info = PetNbt.petInfo(stack);
-            if (info == null || !"GOLDEN_DRAGON".equalsIgnoreCase(PetNbt.type(info))) {
+            if (info == null) {
                 continue;
             }
             long exp = PetNbt.exp(info);
@@ -57,26 +60,42 @@ public final class PetMenuReader {
                 continue;
             }
             Pet pet = new Pet(petId(info), PetNbt.name(stack), exp);
+            boolean golden = GOLDEN_DRAGON.equalsIgnoreCase(PetNbt.type(info));
+            boolean active = isActive(info);
+
             if (GdragConfig.get().debugVerbose || LevelingSession.pendingBind()) {
-                GdragFlipMod.LOGGER.info("[petmenu] slot={} name='{}' active={} id={} exp={}",
-                        slot, pet.name(), isActive(info), pet.id(), exp);
+                GdragFlipMod.LOGGER.info("[petmenu] slot={} name='{}' type={} active={} id={} exp={}",
+                        slot, pet.name(), PetNbt.type(info), active, pet.id(), exp);
             }
-            if (isActive(info)) {
-                found = pet;
-                break;
-            }
-            if (fallback == null) {
-                fallback = pet;
+
+            if (active) {
+                if (golden) {
+                    if (activeGolden == null) {
+                        activeGolden = pet;
+                    }
+                } else if (activeOther == null) {
+                    activeOther = pet;
+                }
+            } else if (golden && goldenFallback == null) {
+                goldenFallback = pet;
             }
         }
 
-        Pet target = found != null ? found : fallback;
+        // 绑定时必须确保出战的是金龙，否则会绑到列表里的其它金龙身上。
+        if (LevelingSession.pendingBind() && activeGolden == null) {
+            if (activeOther != null) {
+                warnBind(client, "当前出战的不是金龙（" + activeOther.name() + "），请先召唤要升级的金龙再打开 /pets");
+            }
+            return;
+        }
+
+        Pet target = activeGolden != null ? activeGolden : goldenFallback;
         if (target == null) {
             return;
         }
 
         String result = LevelingSession.onActivePetRead(
-                target.id(), target.name(), target.exp(), found != null);
+                target.id(), target.name(), target.exp(), activeGolden != null);
         if (client.player == null) {
             return;
         }
@@ -105,6 +124,15 @@ public final class PetMenuReader {
                 // calibrated / ignored：静默
             }
         }
+    }
+
+    private static void warnBind(Minecraft client, String message) {
+        long now = System.currentTimeMillis();
+        if (now - lastBindWarnAt < 10_000L || client.player == null) {
+            return;
+        }
+        lastBindWarnAt = now;
+        client.player.sendSystemMessage(ChatReport.info(message, ChatFormatting.RED));
     }
 
     private static boolean isActive(JsonObject info) {
