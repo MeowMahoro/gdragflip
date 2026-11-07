@@ -24,7 +24,10 @@ import java.util.regex.Pattern;
  */
 public final class ExpShareTracker {
     private static final Pattern RATE_PATTERN = Pattern.compile("([\\d.]+)\\s*%\\s+of");
-    private static final int[] SLOTS = {30, 31, 32};
+    /** 玻璃标记（ACTIVE / DISABLED），决定槽位是否生效以及分享比例。 */
+    private static final int[] MARKER_SLOTS = {30, 31, 32};
+    /** 宠物本体：标记正下方一排的同一列。 */
+    private static final int[] PET_SLOTS = {39, 40, 41};
     private static final String MENU_TITLE = "Exp Sharing";
 
     private static volatile List<SharePet> pets = List.of();
@@ -79,38 +82,53 @@ public final class ExpShareTracker {
         List<SharePet> read = new ArrayList<>();
         int enabled = 0;
 
-        for (int slot : SLOTS) {
-            if (slot >= menu.slots.size()) {
+        for (int i = 0; i < MARKER_SLOTS.length; i++) {
+            int markerSlot = MARKER_SLOTS[i];
+            if (markerSlot >= menu.slots.size()) {
                 continue;
             }
-            ItemStack stack = menu.getSlot(slot).getItem();
-            if (stack.isEmpty()) {
+            ItemStack marker = menu.getSlot(markerSlot).getItem();
+            if (marker.isEmpty()) {
                 continue;
             }
-
-            String lore = PetNbt.loreText(stack).toLowerCase(Locale.ROOT);
-            // DISABLED（Diana 未触发）与 Locked 的槽位都不展示。
-            if (lore.contains("disabled") || lore.contains("locked")) {
+            String markerLore = PetNbt.loreText(marker).toLowerCase(Locale.ROOT);
+            // DISABLED（Diana 未触发）与 Locked 的槽位既不展示也不计入。
+            if (markerLore.contains("disabled") || markerLore.contains("locked")) {
                 continue;
             }
             enabled++;
+            double rate = parseRate(markerLore);
 
-            String hoverName = stack.getHoverName().getString().replaceAll("§.", "");
+            int petSlot = PET_SLOTS[i];
+            ItemStack petStack = petSlot < menu.slots.size() ? menu.getSlot(petSlot).getItem() : ItemStack.EMPTY;
+            // 少数情况宠物直接放在标记槽（旧布局），兜底一下。
+            if (petStack.isEmpty() || PetNbt.petInfo(petStack) == null) {
+                ItemStack fallback = PetNbt.petInfo(marker) != null ? marker : ItemStack.EMPTY;
+                petStack = petStack.isEmpty() ? fallback : petStack;
+            }
+            if (petStack.isEmpty()) {
+                continue;
+            }
+
+            String hoverName = petStack.getHoverName().getString().replaceAll("§.", "");
             if (hoverName.contains("No pet")) {
                 continue;
             }
 
-            JsonObject info = PetNbt.petInfo(stack);
+            JsonObject info = PetNbt.petInfo(petStack);
             long exp = info == null ? -1L : PetNbt.exp(info);
             String type = info == null ? "" : PetNbt.type(info);
-            int level = PetNbt.level(stack, info);
-            double rate = parseRate(lore);
+            int level = PetNbt.level(petStack, info);
 
-            read.add(new SharePet(PetNbt.name(stack), level, exp, type, rate));
+            read.add(new SharePet(PetNbt.name(petStack), level, exp, type, rate));
         }
 
         pets = List.copyOf(read);
         observedSlots = enabled;
+
+        if (net.gdragflip.config.GdragConfig.get().debugVerbose) {
+            net.gdragflip.GdragFlipMod.LOGGER.info("[expshare] enabled={} pets={}", enabled, read);
+        }
     }
 
     /** 从 lore "… ganing 27% of your equipped pet's Exp" 里取分享比例。 */
