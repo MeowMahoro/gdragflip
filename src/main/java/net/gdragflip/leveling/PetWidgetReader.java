@@ -26,8 +26,9 @@ import java.util.regex.Pattern;
 public final class PetWidgetReader {
     private static final String TRACKED_PET = "Golden Dragon";
 
+    /** \u2726 是宠物皮肤标记 ✦，用转义写死避免源码编码问题。 */
     private static final Pattern NAME_PATTERN =
-            Pattern.compile("\\[Lvl ([\\d,]+)]\\s*(?:\\[\\d+✦]\\s*)?([A-Za-z0-9 '_-]+?)(?: ✦)?$");
+            Pattern.compile("\\[Lvl ([\\d,]+)]\\s*(?:\\[\\d+\u2726]\\s*)?([A-Za-z0-9 '_-]+?)(?: \u2726)?$");
     private static final Pattern PROGRESS_PATTERN =
             Pattern.compile("^([\\d,.]+[kKmM]?)/([\\d,.]+[kKmM]?) XP(?: \\(([\\d.]+)%\\))?$");
     private static final Pattern OVERFLOW_PATTERN = Pattern.compile("^\\+([\\d,.]+[kKmM]?) XP$");
