@@ -87,6 +87,8 @@ Exp Share ×1 ≈ +223K XP ｜ +273K coins
   每个分享槽的收益按「本次经验 × 分享系数」估算，系数默认 **18%**（Taming 60 的 12% × 同技能宠物 1.5 倍），
   槽位数按 Diana 的 Sharing is Caring 设为 1 或 3。
 - 命令：`/gdrag hud` 开关 HUD、`/gdrag session [reset]`、`/gdrag settings` 设置界面。
+- **HUD 可拖动**：`/gdrag settings` → 「调整 HUD 位置」，按住 HUD 拖到想要的位置，松手自动保存。
+- 排查用：`/gdrag debug tab` 会把解析到的 tab 行（含序号）打到聊天栏，方便确认 Pet Widget 的文本格式。
 
 配置项（`gdragflip.json`）：
 

@@ -16,13 +16,16 @@ import net.gdragflip.cofl.ExpCache;
 import net.gdragflip.config.GdragConfig;
 import net.gdragflip.leveling.ExpShareTracker;
 import net.gdragflip.leveling.LevelingSession;
+import net.gdragflip.leveling.PetWidgetReader;
 import net.gdragflip.scan.ScanService;
 import net.gdragflip.ui.LevelingSettingsScreen;
 import net.gdragflip.util.PriceParser;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.commands.CommandBuildContext;
+import net.minecraft.network.chat.Component;
 
+import java.util.List;
 import java.util.concurrent.CompletionException;
 
 /**
@@ -64,6 +67,8 @@ public final class GdragCommand {
                 .then(ClientCommands.literal("session")
                         .executes(GdragCommand::sessionInfo)
                         .then(ClientCommands.literal("reset").executes(GdragCommand::sessionReset)))
+                .then(ClientCommands.literal("debug")
+                        .then(ClientCommands.literal("tab").executes(GdragCommand::debugTab)))
 
                 .then(ClientCommands.literal("cache")
                         .then(ClientCommands.literal("clear").executes(GdragCommand::clearCache))
@@ -153,7 +158,8 @@ public final class GdragCommand {
         line(source, "/gdrag reload", "重新读取 config/gdragflip.json");
         line(source, "/gdrag hud", "开关升级助手 HUD");
         line(source, "/gdrag session [reset]", "查看 / 重置本次会话经验统计");
-        line(source, "/gdrag settings", "打开升级助手设置界面");
+        line(source, "/gdrag settings", "打开升级助手设置界面（含拖动 HUD）");
+        line(source, "/gdrag debug tab", "打印解析到的 tab 行（排查 Widget）");
         line(source, "/gdrag help", "显示本帮助");
         source.sendFeedback(ChatReport.info(
                 "定价坐标是累计经验（等级 + 溢出进度）：A = 最低价 100+，B = 最低价 Lvl200（按刚好 200 级计）",
@@ -279,6 +285,16 @@ public final class GdragCommand {
             source.sendFeedback(ChatReport.info("Exp Share 槽位：" + ExpShareTracker.pets().stream()
                     .map(pet -> pet.name() + " Lvl " + pet.level())
                     .reduce((a, b) -> a + "、" + b).orElse(""), ChatFormatting.AQUA));
+        }
+        return 1;
+    }
+
+    private static int debugTab(CommandContext<FabricClientCommandSource> context) {
+        FabricClientCommandSource source = context.getSource();
+        List<String> lines = PetWidgetReader.debugLines(Minecraft.getInstance());
+        source.sendFeedback(ChatReport.info("Tab 共 " + lines.size() + " 行（前 60 行）：", ChatFormatting.GRAY));
+        for (int i = 0; i < Math.min(lines.size(), 60); i++) {
+            source.sendFeedback(Component.literal(lines.get(i)).withStyle(ChatFormatting.DARK_GRAY));
         }
         return 1;
     }
