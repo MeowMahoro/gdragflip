@@ -68,7 +68,7 @@ public final class LevelingSettingsScreen extends Screen {
                 .bounds(left, y, WIDTH, HEIGHT).build());
 
         y += 32;
-        addRenderableWidget(Button.builder(Component.literal("重置本次会话"), button ->
+        addRenderableWidget(Button.builder(Component.literal("重置累计统计（清零）"), button ->
                         LevelingSession.reset())
                 .bounds(left, y, WIDTH, HEIGHT).build());
 

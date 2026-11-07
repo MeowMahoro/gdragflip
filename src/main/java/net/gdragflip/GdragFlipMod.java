@@ -2,6 +2,7 @@ package net.gdragflip;
 
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.gdragflip.auto.AutoScanner;
 import net.gdragflip.command.GdragCommand;
@@ -9,6 +10,7 @@ import net.gdragflip.config.GdragConfig;
 import net.gdragflip.cofl.ExpCache;
 import net.gdragflip.hud.LevelingHud;
 import net.gdragflip.leveling.LevelingAssistant;
+import net.gdragflip.leveling.LevelingSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -20,7 +22,9 @@ public class GdragFlipMod implements ClientModInitializer {
     public void onInitializeClient() {
         GdragConfig.load();
         ExpCache.load();
+        LevelingSession.load();
         ClientCommandRegistrationCallback.EVENT.register(GdragCommand::register);
+        ClientLifecycleEvents.CLIENT_STOPPING.register(client -> LevelingSession.save());
         AutoScanner.register();
         LevelingAssistant.register();
         HudElementRegistry.addLast(LevelingHud.ID, new LevelingHud());

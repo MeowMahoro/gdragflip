@@ -157,7 +157,7 @@ public final class GdragCommand {
         line(source, "/gdrag cache clear|info", "清空 / 查看经验缓存");
         line(source, "/gdrag reload", "重新读取 config/gdragflip.json");
         line(source, "/gdrag hud", "开关升级助手 HUD");
-        line(source, "/gdrag session [reset]", "查看 / 重置本次会话经验统计");
+        line(source, "/gdrag session [reset]", "查看累计经验 / 手动清零（不会自动重置）");
         line(source, "/gdrag settings", "打开升级助手设置界面（含拖动 HUD）");
         line(source, "/gdrag debug tab", "打印解析到的 tab 行（排查 Widget）");
         line(source, "/gdrag help", "显示本帮助");
@@ -264,7 +264,11 @@ public final class GdragCommand {
                 ? 0.0
                 : ScanService.lastResult().pricePerExp();
 
-        source.sendFeedback(ChatReport.info("本次会话：%s XP ｜ %s XP/h ｜ 已装备金龙 %s".formatted(
+        String since = java.time.Instant.ofEpochMilli(LevelingSession.startedAt())
+                .atZone(java.time.ZoneId.systemDefault())
+                .format(java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm"));
+        source.sendFeedback(ChatReport.info("自 %s 起累计：%s XP ｜ %s XP/h ｜ 已装备金龙 %s".formatted(
+                since,
                 ChatReport.coins(xp),
                 ChatReport.coins(Math.round(LevelingSession.xpPerHour())),
                 LevelingSession.goldenDragonEquipped() ? "是" : "否"), ChatFormatting.GRAY));

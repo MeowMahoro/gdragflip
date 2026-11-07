@@ -71,7 +71,7 @@ public final class LevelingHud implements HudElement {
                     .withStyle(ChatFormatting.YELLOW));
         }
 
-        lines.add(Component.literal("本次 " + signed(sessionXp) + " XP").withStyle(ChatFormatting.WHITE));
+        lines.add(Component.literal("累计 " + signed(sessionXp) + " XP").withStyle(ChatFormatting.WHITE));
 
         if (pricePerExp > 0) {
             long coins = Math.round(sessionXp * pricePerExp);
