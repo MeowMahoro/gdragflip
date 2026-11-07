@@ -29,6 +29,8 @@ public final class ExpShareTracker {
     private static final String MENU_TITLE = "Exp Sharing";
 
     private static volatile List<SharePet> pets = List.of();
+    /** 读取到的已开启槽位数量（0 = 还没读过界面）。 */
+    private static volatile int observedSlots;
     private static int cooldown;
 
     private ExpShareTracker() {
@@ -47,8 +49,18 @@ public final class ExpShareTracker {
         return pets;
     }
 
+    /** 已开启的槽位数量；0 表示还没打开过 Exp Sharing 界面。 */
+    public static int observedSlots() {
+        return observedSlots;
+    }
+
+    public static boolean hasData() {
+        return observedSlots > 0;
+    }
+
     public static void clear() {
         pets = List.of();
+        observedSlots = 0;
     }
 
     public static void tick(Minecraft client) {
@@ -65,6 +77,7 @@ public final class ExpShareTracker {
 
         AbstractContainerMenu menu = screen.getMenu();
         List<SharePet> read = new ArrayList<>();
+        int unlocked = 0;
         for (int slot : SLOTS) {
             if (slot >= menu.slots.size()) {
                 continue;
@@ -73,7 +86,12 @@ public final class ExpShareTracker {
             if (stack.isEmpty()) {
                 continue;
             }
-            String hoverName = stack.getHoverName().getString();
+            String hoverName = cleanName(stack.getHoverName().getString());
+            // 未解锁的槽位一般是 "Locked"/"???" 之类的占位物，不计入。
+            if (hoverName.toLowerCase(java.util.Locale.ROOT).contains("locked")) {
+                continue;
+            }
+            unlocked++;
             if (hoverName.contains("No pet")) {
                 continue;
             }
@@ -88,9 +106,10 @@ public final class ExpShareTracker {
                     type = info.get("type").getAsString();
                 }
             }
-            read.add(new SharePet(cleanName(hoverName), levelOf(hoverName), exp, type));
+            read.add(new SharePet(hoverName, levelOf(hoverName), exp, type));
         }
         pets = List.copyOf(read);
+        observedSlots = unlocked;
     }
 
     private static String cleanName(String hoverName) {

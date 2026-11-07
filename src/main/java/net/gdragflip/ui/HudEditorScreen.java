@@ -2,23 +2,63 @@ package net.gdragflip.ui;
 
 import net.gdragflip.config.GdragConfig;
 import net.gdragflip.hud.LevelingHud;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
 
 /**
- * HUD 位置编辑：直接拖动 HUD 本体，松手即保存坐标。
+ * HUD 位置编辑：按住 HUD 拖动，松手自动保存。
  *
- * <p>/gdrag settings → 调整 HUD 位置。</p>
+ * <p>鼠标状态用 {@code MouseHandler} 轮询（{@link #tick()}），不依赖 Screen 的点击事件 ——
+ * 26.3 里事件分发行为有变化，轮询更稳。</p>
  */
 public final class HudEditorScreen extends Screen {
     private boolean dragging;
+    private boolean wasDown;
     private double grabOffsetX;
     private double grabOffsetY;
 
     public HudEditorScreen() {
         super(Component.literal("拖动 HUD 调整位置（ESC 保存退出）"));
+    }
+
+    @Override
+    public void tick() {
+        Minecraft client = this.minecraft;
+        if (client == null) {
+            return;
+        }
+
+        double mouseX = client.mouseHandler.getScaledXPos(client.getWindow());
+        double mouseY = client.mouseHandler.getScaledYPos(client.getWindow());
+        boolean down = client.mouseHandler.isLeftPressed();
+        GdragConfig config = GdragConfig.get();
+
+        int width = LevelingHud.width(client);
+        int height = LevelingHud.height(client);
+
+        if (down && !wasDown) {
+            // 按下瞬间：点在 HUD 范围内就开始拖。
+            if (inside(mouseX, mouseY, config, width, height)) {
+                dragging = true;
+                grabOffsetX = mouseX - config.hudX;
+                grabOffsetY = mouseY - config.hudY;
+            }
+        } else if (down && dragging) {
+            config.hudX = clamp((int) Math.round(mouseX - grabOffsetX), 0, Math.max(0, this.width - width));
+            config.hudY = clamp((int) Math.round(mouseY - grabOffsetY), 0, Math.max(0, this.height - height));
+        } else if (!down && dragging) {
+            dragging = false;
+            GdragConfig.save();
+        }
+
+        wasDown = down;
+    }
+
+    private static boolean inside(double mouseX, double mouseY, GdragConfig config, int width, int height) {
+        return mouseX >= config.hudX && mouseX <= config.hudX + width
+                && mouseY >= config.hudY && mouseY <= config.hudY + height;
     }
 
     @Override
@@ -35,46 +75,6 @@ public final class HudEditorScreen extends Screen {
             int h = LevelingHud.height(this.minecraft);
             graphics.outline(config.hudX - 2, config.hudY - 2, w + 4, h + 4, 0x80FFFF00);
         }
-    }
-
-    @Override
-    public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
-        if (event.button() == 0) {
-            GdragConfig config = GdragConfig.get();
-            int w = LevelingHud.width(this.minecraft);
-            int h = LevelingHud.height(this.minecraft);
-            if (event.x() >= config.hudX && event.x() <= config.hudX + w
-                    && event.y() >= config.hudY && event.y() <= config.hudY + h) {
-                dragging = true;
-                grabOffsetX = event.x() - config.hudX;
-                grabOffsetY = event.y() - config.hudY;
-                return true;
-            }
-        }
-        return super.mouseClicked(event, doubleClick);
-    }
-
-    @Override
-    public boolean mouseDragged(MouseButtonEvent event, double dragX, double dragY) {
-        if (dragging) {
-            GdragConfig config = GdragConfig.get();
-            int w = LevelingHud.width(this.minecraft);
-            int h = LevelingHud.height(this.minecraft);
-            config.hudX = clamp((int) Math.round(event.x() - grabOffsetX), 0, Math.max(0, this.width - w));
-            config.hudY = clamp((int) Math.round(event.y() - grabOffsetY), 0, Math.max(0, this.height - h));
-            return true;
-        }
-        return super.mouseDragged(event, dragX, dragY);
-    }
-
-    @Override
-    public boolean mouseReleased(MouseButtonEvent event) {
-        if (dragging) {
-            dragging = false;
-            GdragConfig.save();
-            return true;
-        }
-        return super.mouseReleased(event);
     }
 
     @Override
