@@ -126,14 +126,15 @@ public final class LevelingHud implements HudElement {
                     .withStyle(ChatFormatting.DARK_GRAY));
         }
 
+        long shareTotalXp = 0L;
         if (config.expShareEnabled && sessionXp > 0) {
             List<ExpShareTracker.SharePet> sharePets = ExpShareTracker.pets();
             int slots = Math.max(1, config.expShareSlots);
             long perPet = Math.round(sessionXp * config.expShareFactorPercent / 100.0);
-            long total = perPet * slots;
-            String label = "Exp Share ×" + slots + " ≈ " + signed(total) + " XP";
+            shareTotalXp = perPet * slots;
+            String label = "Exp Share ×" + slots + " ≈ " + signed(shareTotalXp) + " XP";
             if (pricePerExp > 0) {
-                label += " ｜ " + signed(Math.round(total * pricePerExp)) + " coins";
+                label += " ｜ " + signed(Math.round(shareTotalXp * pricePerExp)) + " coins";
             }
             lines.add(Component.literal(label).withStyle(ChatFormatting.AQUA));
 
@@ -142,6 +143,15 @@ public final class LevelingHud implements HudElement {
                 lines.add(Component.literal("  " + pet.name() + " Lvl " + pet.level()
                         + "  ≈ " + signed(perPet) + " XP").withStyle(ChatFormatting.DARK_AQUA));
             }
+        }
+
+        if (shareTotalXp > 0) {
+            long totalXp = sessionXp + shareTotalXp;
+            String label = "合计（主宠+分享）" + signed(totalXp) + " XP";
+            if (pricePerExp > 0) {
+                label += " ｜ " + signed(Math.round(totalXp * pricePerExp)) + " coins";
+            }
+            lines.add(Component.literal(label).withStyle(ChatFormatting.GOLD));
         }
 
         return lines;
