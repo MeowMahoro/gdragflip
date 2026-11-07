@@ -2,10 +2,13 @@ package net.gdragflip;
 
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.gdragflip.auto.AutoScanner;
 import net.gdragflip.command.GdragCommand;
 import net.gdragflip.config.GdragConfig;
 import net.gdragflip.cofl.ExpCache;
+import net.gdragflip.hud.LevelingHud;
+import net.gdragflip.leveling.LevelingAssistant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -19,6 +22,8 @@ public class GdragFlipMod implements ClientModInitializer {
         ExpCache.load();
         ClientCommandRegistrationCallback.EVENT.register(GdragCommand::register);
         AutoScanner.register();
+        LevelingAssistant.register();
+        HudElementRegistry.addLast(LevelingHud.ID, new LevelingHud());
         LOGGER.info("Golden Dragon Flip loaded");
     }
 }

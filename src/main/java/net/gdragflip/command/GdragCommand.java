@@ -14,7 +14,10 @@ import net.gdragflip.auto.AutoScanner;
 import net.gdragflip.chat.ChatReport;
 import net.gdragflip.cofl.ExpCache;
 import net.gdragflip.config.GdragConfig;
+import net.gdragflip.leveling.ExpShareTracker;
+import net.gdragflip.leveling.LevelingSession;
 import net.gdragflip.scan.ScanService;
+import net.gdragflip.ui.LevelingSettingsScreen;
 import net.gdragflip.util.PriceParser;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
@@ -55,6 +58,12 @@ public final class GdragCommand {
                 .then(ClientCommands.literal("refresh")
                         .executes(context -> scan(context, DEFAULT_LIMIT, null, true)))
                 .then(ClientCommands.literal("reload").executes(GdragCommand::reload))
+
+                .then(ClientCommands.literal("hud").executes(GdragCommand::toggleHud))
+                .then(ClientCommands.literal("settings").executes(GdragCommand::openSettings))
+                .then(ClientCommands.literal("session")
+                        .executes(GdragCommand::sessionInfo)
+                        .then(ClientCommands.literal("reset").executes(GdragCommand::sessionReset)))
 
                 .then(ClientCommands.literal("cache")
                         .then(ClientCommands.literal("clear").executes(GdragCommand::clearCache))
@@ -142,6 +151,9 @@ public final class GdragCommand {
         line(source, "/gdrag auto interval <秒>", "设置间隔（默认 60，最低 5，低于 20 需 confirm）");
         line(source, "/gdrag cache clear|info", "清空 / 查看经验缓存");
         line(source, "/gdrag reload", "重新读取 config/gdragflip.json");
+        line(source, "/gdrag hud", "开关升级助手 HUD");
+        line(source, "/gdrag session [reset]", "查看 / 重置本次会话经验统计");
+        line(source, "/gdrag settings", "打开升级助手设置界面");
         line(source, "/gdrag help", "显示本帮助");
         source.sendFeedback(ChatReport.info(
                 "定价坐标是累计经验（等级 + 溢出进度）：A = 最低价 100+，B = 最低价 Lvl200（按刚好 200 级计）",
@@ -221,6 +233,59 @@ public final class GdragCommand {
         context.getSource().sendFeedback(ChatReport.info(
                 "配置已重新读取：自动扫描 %s，间隔 %d 秒".formatted(
                         config.autoScan ? "开启" : "关闭", config.intervalSeconds), ChatFormatting.GREEN));
+        return 1;
+    }
+
+    private static int toggleHud(CommandContext<FabricClientCommandSource> context) {
+        GdragConfig config = GdragConfig.get();
+        config.levelingHud = !config.levelingHud;
+        GdragConfig.save();
+        context.getSource().sendFeedback(ChatReport.info(
+                "升级助手 HUD " + (config.levelingHud ? "已开启" : "已关闭") + "（位置/分享参数用 /gdrag settings 调整）",
+                ChatFormatting.GREEN));
+        return 1;
+    }
+
+    private static int openSettings(CommandContext<FabricClientCommandSource> context) {
+        Minecraft.getInstance().gui.setScreen(new LevelingSettingsScreen());
+        return 1;
+    }
+
+    private static int sessionInfo(CommandContext<FabricClientCommandSource> context) {
+        FabricClientCommandSource source = context.getSource();
+        long xp = LevelingSession.totalXp();
+        double pricePerExp = ScanService.lastResult() == null || !ScanService.lastResult().hasPricing()
+                ? 0.0
+                : ScanService.lastResult().pricePerExp();
+
+        source.sendFeedback(ChatReport.info("本次会话：%s XP ｜ %s XP/h ｜ 已装备金龙 %s".formatted(
+                ChatReport.coins(xp),
+                ChatReport.coins(Math.round(LevelingSession.xpPerHour())),
+                LevelingSession.goldenDragonEquipped() ? "是" : "否"), ChatFormatting.GRAY));
+
+        if (pricePerExp > 0) {
+            source.sendFeedback(ChatReport.info("折合收益：%s coins（基准 %s / 1M XP）".formatted(
+                    ChatReport.coins(Math.round(xp * pricePerExp)),
+                    ChatReport.coins(Math.round(pricePerExp * 1_000_000.0))), ChatFormatting.GREEN));
+        } else {
+            source.sendFeedback(ChatReport.info("行情未就绪：先执行 /gdrag 或开启自动扫描", ChatFormatting.YELLOW));
+        }
+
+        if (!LevelingSession.widgetDetected()) {
+            source.sendFeedback(ChatReport.info("未检测到宠物 Widget：请在 /tab 开启 Pet Widget", ChatFormatting.RED));
+        }
+
+        if (!ExpShareTracker.pets().isEmpty()) {
+            source.sendFeedback(ChatReport.info("Exp Share 槽位：" + ExpShareTracker.pets().stream()
+                    .map(pet -> pet.name() + " Lvl " + pet.level())
+                    .reduce((a, b) -> a + "、" + b).orElse(""), ChatFormatting.AQUA));
+        }
+        return 1;
+    }
+
+    private static int sessionReset(CommandContext<FabricClientCommandSource> context) {
+        LevelingSession.reset();
+        context.getSource().sendFeedback(ChatReport.info("本次会话统计已重置", ChatFormatting.GREEN));
         return 1;
     }
 

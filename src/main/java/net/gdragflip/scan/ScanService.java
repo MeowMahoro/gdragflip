@@ -40,6 +40,11 @@ public final class ScanService {
         return null;
     }
 
+    /** 最近一次扫描结果（不看新鲜度，供 HUD 取价格基准）。 */
+    public static GdragAnalysis lastResult() {
+        return last;
+    }
+
     public static boolean hasResult() {
         return last != null;
     }

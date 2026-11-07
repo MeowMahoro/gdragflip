@@ -17,6 +17,9 @@ Hypixel SkyBlock 客户端 Fabric mod：分析拍卖行里 **100 级以上的 Go
 | `/gdrag auto interval <秒>` | 设置扫描间隔（默认 60，最低 5；低于 20 秒需 `confirm` 二次确认） |
 | `/gdrag cache clear\|info` | 清空 / 查看经验缓存 |
 | `/gdrag reload` | 重新读取 `config/gdragflip.json` |
+| `/gdrag hud` | 开关「升级助手」HUD |
+| `/gdrag session [reset]` | 查看 / 重置本次会话经验统计 |
+| `/gdrag settings` | 打开升级助手设置界面 |
 | `/gdrag help` | 命令帮助 |
 
 `/gdrag 125 660m` 这种旧写法仍然可用（≤50 视为条数，否则视为等级）。
@@ -59,6 +62,41 @@ Lvl 1~99 是 `Golden Dragon Egg`（未破壳、不能装备宠物物品），因
 - 101~200 级：每级固定 1,886,700 XP，满级累计 214,023,230 XP
 
 等级只是展示用的换算结果，内部一律用累计经验。
+
+## 升级助手（本次会话收益）
+
+在地牢刷怪时实时统计金龙获得的经验，并按当前行情折算成金币，HUD 显示：
+
+```
+金龙升级助手
+Lvl 123 +47%
+本次 +1.24M XP
+≈ +1.52M coins
+基准 1.22M/1M XP ｜ 1.9M XP/h
+Exp Share ×1 ≈ +223K XP ｜ +273K coins
+  骷髅 Lvl 100  ≈ +223K XP
+```
+
+- **数据来源是 Tab 列表的 Pet Widget**（`[Lvl 123] Golden Dragon` + `33,915/179.7k XP (18.9%)`）。
+  这是客户端唯一能实时拿到宠物等级/经验进度的渠道，**必须在 `/tab` 里开启 Pet Widget**；
+  没开时 HUD 会提示「未检测到宠物 Widget」。
+- 每 5 tick 采样一次，用累计经验求差累加，升级、跨级自然处理；切宠物或数据回退只重置基准，不计负值。
+- **只统计金龙**；当前召唤的不是金龙时 HUD 显示「请装备金龙宠物」，不计收益。
+- 收益 = 本次经验 × **每经验单价**（即拍卖扫描的 A/B 基准，`/gdrag` 或自动扫描会持续刷新）。
+- **Exp Share**：打开一次 `/pets → Exp Sharing`，mod 会读取槽位 30/31/32 的宠物（名字/等级）；
+  每个分享槽的收益按「本次经验 × 分享系数」估算，系数默认 **18%**（Taming 60 的 12% × 同技能宠物 1.5 倍），
+  槽位数按 Diana 的 Sharing is Caring 设为 1 或 3。
+- 命令：`/gdrag hud` 开关 HUD、`/gdrag session [reset]`、`/gdrag settings` 设置界面。
+
+配置项（`gdragflip.json`）：
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `levelingHud` | false | 是否显示升级助手 HUD |
+| `hudX` / `hudY` | 4 / 4 | HUD 左上角坐标 |
+| `expShareEnabled` | true | 是否统计 Exp Share |
+| `expShareFactorPercent` | 18.0 | 每个分享槽的估算系数（%） |
+| `expShareSlots` | 1 | 分享槽数量（1 或 3） |
 
 ## 数据源与限流
 
