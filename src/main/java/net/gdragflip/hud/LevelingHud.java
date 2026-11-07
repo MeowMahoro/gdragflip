@@ -67,9 +67,7 @@ public final class LevelingHud implements HudElement {
         boolean estimating = !accurateNow && LevelingSession.estimatedWithin(120_000L);
 
         if (accurateNow) {
-            // 精确数据：来自 Tab 的 Pet Widget。
-            lines.add(Component.literal("精确 · " + PetXpCurve.levelLabel(snapshot.totalExp()))
-                    .withStyle(ChatFormatting.GREEN));
+            // 精确数据时等级由「主宠」段展示，这里不重复。
         } else if (LevelingSession.mismatch()) {
             // 不符优先于「估算」：暂停状态下不该再显示估算来源。
             String current = LevelingSession.currentPetName();
