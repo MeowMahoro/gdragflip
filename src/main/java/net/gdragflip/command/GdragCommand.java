@@ -15,9 +15,11 @@ import net.gdragflip.chat.ChatReport;
 import net.gdragflip.cofl.ExpCache;
 import net.gdragflip.config.GdragConfig;
 import net.gdragflip.leveling.ExpShareTracker;
+import net.gdragflip.leveling.LevelingAssistant;
 import net.gdragflip.leveling.LevelingSession;
 import net.gdragflip.leveling.PetWidgetReader;
 import net.gdragflip.scan.ScanService;
+import net.gdragflip.ui.HudEditorScreen;
 import net.gdragflip.ui.LevelingSettingsScreen;
 import net.gdragflip.util.PriceParser;
 import net.minecraft.ChatFormatting;
@@ -62,13 +64,23 @@ public final class GdragCommand {
                         .executes(context -> scan(context, DEFAULT_LIMIT, null, true)))
                 .then(ClientCommands.literal("reload").executes(GdragCommand::reload))
 
-                .then(ClientCommands.literal("hud").executes(GdragCommand::toggleHud))
+                .then(ClientCommands.literal("hud")
+                        .executes(GdragCommand::toggleHud)
+                        .then(ClientCommands.literal("move").executes(GdragCommand::openHudEditor))
+                        .then(ClientCommands.literal("pos")
+                                .then(ClientCommands.argument("x", IntegerArgumentType.integer(0, 10000))
+                                        .then(ClientCommands.argument("y", IntegerArgumentType.integer(0, 10000))
+                                                .executes(GdragCommand::setHudPos)))))
                 .then(ClientCommands.literal("settings").executes(GdragCommand::openSettings))
                 .then(ClientCommands.literal("session")
                         .executes(GdragCommand::sessionInfo)
+                        .then(ClientCommands.literal("start").executes(GdragCommand::sessionStart))
                         .then(ClientCommands.literal("reset").executes(GdragCommand::sessionReset)))
                 .then(ClientCommands.literal("debug")
-                        .then(ClientCommands.literal("tab").executes(GdragCommand::debugTab)))
+                        .then(ClientCommands.literal("tab").executes(GdragCommand::debugTab))
+                        .then(ClientCommands.literal("state").executes(GdragCommand::debugState))
+                        .then(ClientCommands.literal("on").executes(context -> setDebug(context, true)))
+                        .then(ClientCommands.literal("off").executes(context -> setDebug(context, false))))
 
                 .then(ClientCommands.literal("cache")
                         .then(ClientCommands.literal("clear").executes(GdragCommand::clearCache))
@@ -157,9 +169,15 @@ public final class GdragCommand {
         line(source, "/gdrag cache clear|info", "清空 / 查看经验缓存");
         line(source, "/gdrag reload", "重新读取 config/gdragflip.json");
         line(source, "/gdrag hud", "开关升级助手 HUD");
-        line(source, "/gdrag session [reset]", "查看累计经验 / 手动清零（不会自动重置）");
+        line(source, "/gdrag hud move", "进入拖动模式调整 HUD 位置");
+        line(source, "/gdrag hud pos <x> <y>", "直接用坐标设置 HUD 位置");
+        line(source, "/gdrag session", "查看会话状态（绑定宠物/累计/速率）");
+        line(source, "/gdrag session start", "开始新会话：装备宠物后打开 /pets 完成绑定");
+        line(source, "/gdrag session reset", "清零并解除绑定");
         line(source, "/gdrag settings", "打开升级助手设置界面（含拖动 HUD）");
         line(source, "/gdrag debug tab", "打印解析到的 tab 行（排查 Widget）");
+        line(source, "/gdrag debug state", "打印会话/绑定/Widget/单价状态");
+        line(source, "/gdrag debug on|off", "开关详细日志（写入 latest.log）");
         line(source, "/gdrag help", "显示本帮助");
         source.sendFeedback(ChatReport.info(
                 "定价坐标是累计经验（等级 + 溢出进度）：A = 最低价 100+，B = 最低价 Lvl200（按刚好 200 级计）",
@@ -253,7 +271,30 @@ public final class GdragCommand {
     }
 
     private static int openSettings(CommandContext<FabricClientCommandSource> context) {
-        Minecraft.getInstance().gui.setScreen(new LevelingSettingsScreen());
+        LevelingAssistant.openNextTick(new LevelingSettingsScreen());
+        return 1;
+    }
+
+    private static int openHudEditor(CommandContext<FabricClientCommandSource> context) {
+        GdragConfig config = GdragConfig.get();
+        if (!config.levelingHud) {
+            config.levelingHud = true;
+            GdragConfig.save();
+        }
+        LevelingAssistant.openNextTick(new HudEditorScreen());
+        return 1;
+    }
+
+    private static int setHudPos(CommandContext<FabricClientCommandSource> context) {
+        int x = IntegerArgumentType.getInteger(context, "x");
+        int y = IntegerArgumentType.getInteger(context, "y");
+        GdragConfig config = GdragConfig.get();
+        config.hudX = x;
+        config.hudY = y;
+        config.levelingHud = true;
+        GdragConfig.save();
+        context.getSource().sendFeedback(ChatReport.info(
+                "HUD 位置已设为 (%d, %d)".formatted(x, y), ChatFormatting.GREEN));
         return 1;
     }
 
@@ -267,6 +308,17 @@ public final class GdragCommand {
         String since = java.time.Instant.ofEpochMilli(LevelingSession.startedAt())
                 .atZone(java.time.ZoneId.systemDefault())
                 .format(java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm"));
+        if (!LevelingSession.bound()) {
+            source.sendFeedback(ChatReport.info(LevelingSession.pendingBind()
+                    ? "等待绑定：请装备要升级的宠物并打开一次 /pets 菜单"
+                    : "会话未开始：先执行 /gdrag session start", ChatFormatting.YELLOW));
+        } else {
+            source.sendFeedback(ChatReport.info("绑定宠物：%s%s".formatted(
+                    LevelingSession.boundPetName(),
+                    LevelingSession.mismatch() ? " ｜ ⚠ 当前宠物不符（已暂停）" : " ｜ ✓"),
+                    LevelingSession.mismatch() ? ChatFormatting.RED : ChatFormatting.GREEN));
+        }
+
         source.sendFeedback(ChatReport.info("自 %s 起累计：%s XP ｜ %s XP/h ｜ 已装备金龙 %s".formatted(
                 since,
                 ChatReport.coins(xp),
@@ -281,7 +333,18 @@ public final class GdragCommand {
             source.sendFeedback(ChatReport.info("行情未就绪：先执行 /gdrag 或开启自动扫描", ChatFormatting.YELLOW));
         }
 
-        if (!LevelingSession.widgetDetected()) {
+        long dungeonMinutes = LevelingSession.dungeonMillis() / 60_000L;
+        source.sendFeedback(ChatReport.info("地牢计时：%d 分钟 ｜ 估算系数 %.2f%s".formatted(
+                dungeonMinutes,
+                LevelingSession.estimateFactor(),
+                LevelingSession.usingEstimate() ? "（当前为估算）" : ""), ChatFormatting.GRAY));
+        source.sendFeedback(ChatReport.info("当前宠物：%s".formatted(
+                LevelingSession.currentPetKnown() ? LevelingSession.currentPetName() : "未知（尚未收到召唤消息）"),
+                ChatFormatting.GRAY));
+
+        if (!LevelingSession.widgetDetected()
+                && !LevelingSession.estimatedWithin(120_000L)
+                && LevelingSession.dungeonMillis() == 0L) {
             source.sendFeedback(ChatReport.info("未检测到宠物 Widget：请在 /tab 开启 Pet Widget", ChatFormatting.RED));
         }
 
@@ -296,10 +359,77 @@ public final class GdragCommand {
     private static int debugTab(CommandContext<FabricClientCommandSource> context) {
         FabricClientCommandSource source = context.getSource();
         List<String> lines = PetWidgetReader.debugLines(Minecraft.getInstance());
-        source.sendFeedback(ChatReport.info("Tab 共 " + lines.size() + " 行（前 60 行）：", ChatFormatting.GRAY));
-        for (int i = 0; i < Math.min(lines.size(), 60); i++) {
-            source.sendFeedback(Component.literal(lines.get(i)).withStyle(ChatFormatting.DARK_GRAY));
+        source.sendFeedback(ChatReport.info("Tab 共 " + lines.size() + " 行（只列非空行，最多 120 条）：", ChatFormatting.GRAY));
+        int shown = 0;
+        for (String line : lines) {
+            int separator = line.indexOf('|');
+            if (separator < 0 || line.substring(separator + 1).trim().isEmpty()) {
+                continue;
+            }
+            if (shown++ >= 120) {
+                break;
+            }
+            source.sendFeedback(Component.literal(line).withStyle(ChatFormatting.DARK_GRAY));
         }
+
+        PetWidgetReader.Snapshot snapshot = PetWidgetReader.read(Minecraft.getInstance());
+        source.sendFeedback(ChatReport.info("解析结果：found=%s golden=%s level=%d exp=%d".formatted(
+                snapshot.found(), snapshot.goldenDragon(), snapshot.level(), snapshot.totalExp()),
+                snapshot.found() ? ChatFormatting.GREEN : ChatFormatting.RED));
+        return 1;
+    }
+
+    private static int debugState(CommandContext<FabricClientCommandSource> context) {
+        FabricClientCommandSource source = context.getSource();
+        PetWidgetReader.Snapshot snapshot = LevelingAssistant.snapshot();
+        String bound = LevelingSession.bound()
+                ? LevelingSession.boundPetName() + (LevelingSession.boundConfident() ? "（精确绑定）" : "（名字绑定）")
+                : "未绑定";
+        long estimateAge = LevelingSession.estimateAgeMillis();
+
+        source.sendFeedback(ChatReport.info("会话：%s ｜ 当前宠物 %s ｜ %s".formatted(
+                bound,
+                LevelingSession.currentPetName().isEmpty() ? "未知" : LevelingSession.currentPetName(),
+                LevelingSession.mismatch() ? "⚠ 不符（已暂停）" : "✓ 匹配"), ChatFormatting.GRAY));
+
+        source.sendFeedback(ChatReport.info("累计 %s XP ｜ 活跃 %d 分钟 ｜ 地牢 %d 分钟 ｜ 系数 %.3f ｜ 估算 %s".formatted(
+                ChatReport.coins(LevelingSession.totalXp()),
+                LevelingSession.activeMillis() / 60_000L,
+                LevelingSession.dungeonMillis() / 60_000L,
+                LevelingSession.estimateFactor(),
+                estimateAge < 0 ? "从未" : (estimateAge / 1000) + " 秒前"), ChatFormatting.GRAY));
+        source.sendFeedback(ChatReport.info("待校准样本：%s XP（≥5 万且间隔 ≥60 秒才会更新系数）".formatted(
+                ChatReport.coins(LevelingSession.rawSinceAnchor())), ChatFormatting.DARK_GRAY));
+
+        source.sendFeedback(ChatReport.info("Widget：found=%s pet='%s' level=%d exp=%s ｜ Widget 检测=%s".formatted(
+                snapshot.found(), snapshot.petName(), snapshot.level(),
+                ChatReport.coins(snapshot.totalExp()),
+                LevelingSession.widgetDetected() ? "是" : "否"), ChatFormatting.GRAY));
+
+        double price = ScanService.lastResult() != null && ScanService.lastResult().hasPricing()
+                ? ScanService.lastResult().pricePerExp() : 0.0;
+        source.sendFeedback(ChatReport.info("单价：%s coins/XP ｜ 详细日志：%s".formatted(
+                price > 0 ? String.format("%.4f", price) : "行情未就绪",
+                GdragConfig.get().debugVerbose ? "开" : "关"), ChatFormatting.GRAY));
+        return 1;
+    }
+
+    private static int setDebug(CommandContext<FabricClientCommandSource> context, boolean enabled) {
+        GdragConfig config = GdragConfig.get();
+        config.debugVerbose = enabled;
+        GdragConfig.save();
+        context.getSource().sendFeedback(ChatReport.info(
+                "调试日志已" + (enabled ? "开启（每次采样/估算都会写 latest.log）" : "关闭"),
+                ChatFormatting.GREEN));
+        return 1;
+    }
+
+    private static int sessionStart(CommandContext<FabricClientCommandSource> context) {
+        LevelingSession.requestStart();
+        context.getSource().sendFeedback(ChatReport.info(
+                "开始新会话：请装备要升级的宠物，然后打开一次 /pets 菜单完成 UUID 绑定", ChatFormatting.YELLOW));
+        context.getSource().sendFeedback(ChatReport.info(
+                "绑定后再开 /pets 会自动用真实经验校准估算值", ChatFormatting.GRAY));
         return 1;
     }
 

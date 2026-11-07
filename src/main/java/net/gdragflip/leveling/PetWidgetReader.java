@@ -1,11 +1,14 @@
 package net.gdragflip.leveling;
 
+import net.gdragflip.GdragFlipMod;
 import net.gdragflip.analysis.PetXpCurve;
+import net.gdragflip.config.GdragConfig;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.scores.PlayerTeam;
 
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -28,20 +31,23 @@ import java.util.regex.Pattern;
  */
 public final class PetWidgetReader {
     private static final String TRACKED_PET = "Golden Dragon";
-    private static final int MAX_LINES = 80;
+    private static volatile long lastDiagAt;
+    /** tab 条目上限（Hypixel 的 tab 常有 100+ 行，不能截断太早）。 */
+    private static final int MAX_LINES = 200;
 
     /** \u2726 是宠物皮肤标记 ✦，用转义写死避免源码编码问题。 */
     private static final Pattern NAME_PATTERN =
             Pattern.compile("\\[Lvl ([\\d,]+)]\\s*(?:\\[\\d+\u2726]\\s*)?([A-Za-z0-9 '_-]+?)(?: \u2726)?$");
+    /** 经验行：兼容 "7,544/87,900"、"1,698,900.4/1.9M XP (90%)"、任意空白字符。 */
     private static final Pattern PROGRESS_PATTERN =
-            Pattern.compile("^([\\d,.]+[kKmM]?)/([\\d,.]+[kKmM]?) XP(?: \\(([\\d.]+)%\\))?$");
-    private static final Pattern OVERFLOW_PATTERN = Pattern.compile("^\\+([\\d,.]+[kKmM]?) XP$");
+            Pattern.compile("^([\\d,.]+[kKmM]?)\\s*/\\s*([\\d,.]+[kKmM]?)\\s*(?:XP)?\\s*(?:\\(([\\d.]+)%\\))?$");
+    private static final Pattern OVERFLOW_PATTERN = Pattern.compile("^\\+\\s*([\\d,.]+[kKmM]?)\\s*XP$");
 
-    /** 宽松兜底：行里带 "Lvl N" / "a/b XP" / "+N XP" 即可。 */
+    /** 宽松兜底：行里带 "Lvl N" / "a/b" / "+N XP" 即可。 */
     private static final Pattern LEVEL_PATTERN = Pattern.compile("Lvl\\s*([\\d,]+)");
     private static final Pattern PROGRESS_LOOSE_PATTERN =
             Pattern.compile("([\\d,.]+[kKmM]?)\\s*/\\s*([\\d,.]+[kKmM]?)\\s*XP");
-    private static final Pattern OVERFLOW_LOOSE_PATTERN = Pattern.compile("\\+([\\d,.]+[kKmM]?)\\s*XP");
+    private static final Pattern OVERFLOW_LOOSE_PATTERN = Pattern.compile("\\+\\s*([\\d,.]+[kKmM]?)\\s*XP");
 
     private PetWidgetReader() {
     }
@@ -74,33 +80,102 @@ public final class PetWidgetReader {
             }
             Integer level = extractLevel(nameLine);
             if (level == null || level <= 0) {
+                GdragFlipMod.LOGGER.info("[petwidget] 名字行命中但取不到等级: '{}'", describe(nameLine));
                 continue;
             }
             String petName = TRACKED_PET;
 
             // 经验行紧跟在名字行之后（可能夹着宠物道具行），也兼容上一行。
+            // 优先取 "a/b" 的等级进度行，其次才是 "+N XP"（满级溢出）。
+            Xp progress = null;
+            Xp overflow = null;
             for (int offset = 1; offset <= 3; offset++) {
                 Xp xp = xpAt(lines, i + offset);
                 if (xp == null) {
                     continue;
                 }
-                return toSnapshot(level, petName, xp);
+                if (!xp.maxLevel() && progress == null) {
+                    progress = xp;
+                } else if (xp.maxLevel() && overflow == null) {
+                    overflow = xp;
+                }
+            }
+            if (progress != null) {
+                return toSnapshot(level, petName, progress);
+            }
+            if (overflow != null) {
+                return toSnapshot(level, petName, overflow);
             }
             Xp above = xpAt(lines, i - 1);
             if (above != null) {
                 return toSnapshot(level, petName, above);
             }
+
+            logNeighbors(lines, i, nameLine);
         }
         return Snapshot.MISSING;
     }
 
+    private static void logNeighbors(List<String> lines, int index, String nameLine) {
+        long now = System.currentTimeMillis();
+        if (now - lastDiagAt < 5_000L) {
+            return;
+        }
+        lastDiagAt = now;
+        GdragFlipMod.LOGGER.info("[petwidget] 名字行 #{} '{}' 相邻行不匹配，附近内容：", index, describe(nameLine));
+        for (int offset = -1; offset <= 3; offset++) {
+            if (offset == 0) {
+                continue;
+            }
+            int target = index + offset;
+            if (target < 0 || target >= lines.size()) {
+                continue;
+            }
+            String text = lines.get(target);
+            Xp xp = parseXp(text.trim());
+            GdragFlipMod.LOGGER.info("[petwidget]   {} '{}' -> {}", offset, describe(text),
+                    xp == null ? "null" : "xp(current=" + xp.current() + ",max=" + xp.maxLevel() + ")");
+        }
+    }
+
+    /** 调试用：把不可见字符转成可见标记。 */
+    private static String describe(String text) {
+        StringBuilder builder = new StringBuilder(text.length() + 8);
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            switch (c) {
+                case '\u00A0' -> builder.append("<NBSP>");
+                case '\u2007' -> builder.append("<FIGSP>");
+                case '\u202F' -> builder.append("<NNBSP>");
+                case '\u200B' -> builder.append("<ZWSP>");
+                default -> {
+                    if (c < 0x20 || c == 0x7F) {
+                        builder.append("<CTRL:").append((int) c).append('>');
+                    } else if (c > 0x7E) {
+                        builder.append(String.format("<U+%04X>", (int) c));
+                    } else {
+                        builder.append(c);
+                    }
+                }
+            }
+        }
+        return builder.toString();
+    }
+
     private static Snapshot toSnapshot(int level, String petName, Xp xp) {
+        Snapshot snapshot;
         if (xp.maxLevel()) {
             long total = PetXpCurve.CAP + xp.overflow();
-            return new Snapshot(true, true, PetXpCurve.MAX_LEVEL, total, xp.overflow(), petName);
+            snapshot = new Snapshot(true, true, PetXpCurve.MAX_LEVEL, total, xp.overflow(), petName);
+        } else {
+            long total = PetXpCurve.expAtLevel(level) + xp.current();
+            snapshot = new Snapshot(true, true, level, total, total - PetXpCurve.expAtLevel(level), petName);
         }
-        long total = PetXpCurve.expAtLevel(level) + xp.current();
-        return new Snapshot(true, true, level, total, total - PetXpCurve.expAtLevel(level), petName);
+        if (GdragConfig.get().debugVerbose) {
+            GdragFlipMod.LOGGER.info("[petwidget] 精确读取：pet='{}' level={} exp={}", petName, level,
+                    snapshot.totalExp());
+        }
+        return snapshot;
     }
 
     private static Xp xpAt(List<String> lines, int index) {
@@ -148,12 +223,19 @@ public final class PetWidgetReader {
         return lines;
     }
 
-    /** 调试用：带序号与排序值的原始行。 */
+    /** 调试用：带序号，并标记疑似宠物名字行 / 经验行。 */
     public static List<String> debugLines(Minecraft client) {
         List<String> lines = lines(client);
         List<String> result = new ArrayList<>(lines.size());
         for (int i = 0; i < lines.size(); i++) {
-            result.add(i + "| " + lines.get(i));
+            String text = lines.get(i);
+            String marker = "";
+            if (text.toLowerCase(Locale.ROOT).contains(TRACKED_PET.toLowerCase(Locale.ROOT))) {
+                marker = "   <== 金龙名字行";
+            } else if (parseXp(text.trim()) != null) {
+                marker = "   <== 经验行?";
+            }
+            result.add(i + "| " + text + marker);
         }
         return result;
     }
@@ -178,17 +260,21 @@ public final class PetWidgetReader {
     }
 
     /** 宽松解析经验行：允许行内还有其他前后缀文本。 */
-    private static Xp parseXp(String text) {
+    private static Xp parseXp(String rawText) {
+        String text = normalizeSpaces(
+                Normalizer.normalize(rawText, Normalizer.Form.NFKC)).trim();
         if (text.equals("MAX LEVEL") || text.equals("MAX LEVEL!")) {
             return new Xp(0L, true, 0L);
         }
 
+        // 注意：matches() 之后不能再对同一个 Matcher 调 find()（会从匹配末尾继续找，必然失败）。
         Matcher progress = PROGRESS_PATTERN.matcher(text);
-        if (!progress.matches()) {
-            progress = PROGRESS_LOOSE_PATTERN.matcher(text);
-        }
-        if (progress.find()) {
+        if (progress.matches()) {
             return new Xp(parseNumber(progress.group(1)), false, 0L);
+        }
+        Matcher looseProgress = PROGRESS_LOOSE_PATTERN.matcher(text);
+        if (looseProgress.find()) {
+            return new Xp(parseNumber(looseProgress.group(1)), false, 0L);
         }
 
         if (text.contains("MAX LEVEL")) {
@@ -196,11 +282,12 @@ public final class PetWidgetReader {
         }
 
         Matcher overflow = OVERFLOW_PATTERN.matcher(text);
-        if (!overflow.matches()) {
-            overflow = OVERFLOW_LOOSE_PATTERN.matcher(text);
-        }
-        if (overflow.find()) {
+        if (overflow.matches()) {
             return new Xp(0L, true, parseNumber(overflow.group(1)));
+        }
+        Matcher looseOverflow = OVERFLOW_LOOSE_PATTERN.matcher(text);
+        if (looseOverflow.find()) {
+            return new Xp(0L, true, parseNumber(looseOverflow.group(1)));
         }
         return null;
     }
@@ -236,7 +323,18 @@ public final class PetWidgetReader {
     }
 
     private static String stripColors(String text) {
-        return text.replaceAll("§.", "");
+        // NFKC 会把全角字符、各种 Unicode 空白（U+2000~U+200A、U+00A0 等）归一成 ASCII。
+        String normalized = Normalizer.normalize(text.replaceAll("§.", ""), Normalizer.Form.NFKC);
+        return normalizeSpaces(normalized);
+    }
+
+    /** Hypixel 偶尔用不换行空格做对齐，统一成普通空格，避免正则匹配失败。 */
+    private static String normalizeSpaces(String text) {
+        return text.replace('\u00A0', ' ')
+                .replace('\u2007', ' ')
+                .replace('\u202F', ' ')
+                .replace('\u200B', ' ')
+                .replace('\u3000', ' ');
     }
 
     private record Entry(int order, boolean spectator, String teamName, String profileName, String text) {
