@@ -55,8 +55,8 @@ public final class LevelingAssistant {
         ExpShareTracker.tick(client);
         PetMenuReader.tick(client);
 
-        // 地牢计时：没有 Pet Widget、但仍在持续获得经验时才算「在打」。
-        if (!snapshot.found() && LevelingSession.estimatedWithin(120_000L)) {
+        // 地牢计时：tab 上没有任何宠物 Widget、宠物匹配、且仍在持续获得经验时才算「在打」。
+        if (!snapshot.found() && !LevelingSession.mismatch() && LevelingSession.estimatedWithin(120_000L)) {
             LevelingSession.addDungeonMillis(delta);
         }
 

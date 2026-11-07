@@ -72,48 +72,71 @@ public final class PetWidgetReader {
             return Snapshot.MISSING;
         }
 
+        // 兜底：只要 tab 上有「任何宠物」Widget，就说明不在无 Widget 的环境（例如地牢），
+        // 用来让地牢计时正确暂停；金龙的精确数据仍优先返回。
+        Snapshot otherPet = null;
+
         for (int i = 0; i < lines.size(); i++) {
             String nameLine = lines.get(i).trim();
-            // 宽松匹配：只要这一行提到金龙并且带等级即可（避免格式细节差异导致整块失效）。
-            if (!nameLine.toLowerCase(Locale.ROOT).contains(TRACKED_PET.toLowerCase(Locale.ROOT))) {
-                continue;
-            }
-            Integer level = extractLevel(nameLine);
-            if (level == null || level <= 0) {
-                GdragFlipMod.LOGGER.info("[petwidget] 名字行命中但取不到等级: '{}'", describe(nameLine));
-                continue;
-            }
-            String petName = TRACKED_PET;
-
-            // 经验行紧跟在名字行之后（可能夹着宠物道具行），也兼容上一行。
-            // 优先取 "a/b" 的等级进度行，其次才是 "+N XP"（满级溢出）。
-            Xp progress = null;
-            Xp overflow = null;
-            for (int offset = 1; offset <= 3; offset++) {
-                Xp xp = xpAt(lines, i + offset);
-                if (xp == null) {
+            Matcher strict = NAME_PATTERN.matcher(nameLine);
+            Integer level = null;
+            String petName;
+            if (strict.find()) {
+                level = parseInt(strict.group(1), 0);
+                petName = strict.group(2).trim();
+            } else {
+                Matcher loose = LEVEL_PATTERN.matcher(nameLine);
+                if (!loose.find()) {
                     continue;
                 }
-                if (!xp.maxLevel() && progress == null) {
-                    progress = xp;
-                } else if (xp.maxLevel() && overflow == null) {
-                    overflow = xp;
-                }
+                level = parseInt(loose.group(1), 0);
+                petName = nameLine.replaceAll("\\[Lvl [\\d,]+]", "").replace("\u2726", "").trim();
             }
-            if (progress != null) {
-                return toSnapshot(level, petName, progress);
-            }
-            if (overflow != null) {
-                return toSnapshot(level, petName, overflow);
-            }
-            Xp above = xpAt(lines, i - 1);
-            if (above != null) {
-                return toSnapshot(level, petName, above);
+            if (level == null || level <= 0) {
+                continue;
             }
 
-            logNeighbors(lines, i, nameLine);
+            boolean golden = petName.toLowerCase(Locale.ROOT).contains(TRACKED_PET.toLowerCase(Locale.ROOT));
+            Xp xp = findXp(lines, i);
+
+            if (golden) {
+                if (xp != null) {
+                    return toSnapshot(level, petName, xp, true);
+                }
+                logNeighbors(lines, i, nameLine);
+                continue;
+            }
+
+            if (otherPet == null) {
+                otherPet = new Snapshot(true, false, level, PetXpCurve.expAtLevel(level), 0L, petName);
+            }
         }
-        return Snapshot.MISSING;
+
+        return otherPet != null ? otherPet : Snapshot.MISSING;
+    }
+
+    /** 名字行附近找经验行：优先 "a/b" 进度，其次 "+N XP" 满级溢出，最后看上一行。 */
+    private static Xp findXp(List<String> lines, int index) {
+        Xp progress = null;
+        Xp overflow = null;
+        for (int offset = 1; offset <= 3; offset++) {
+            Xp xp = xpAt(lines, index + offset);
+            if (xp == null) {
+                continue;
+            }
+            if (!xp.maxLevel() && progress == null) {
+                progress = xp;
+            } else if (xp.maxLevel() && overflow == null) {
+                overflow = xp;
+            }
+        }
+        if (progress != null) {
+            return progress;
+        }
+        if (overflow != null) {
+            return overflow;
+        }
+        return xpAt(lines, index - 1);
     }
 
     private static void logNeighbors(List<String> lines, int index, String nameLine) {
@@ -162,14 +185,14 @@ public final class PetWidgetReader {
         return builder.toString();
     }
 
-    private static Snapshot toSnapshot(int level, String petName, Xp xp) {
+    private static Snapshot toSnapshot(int level, String petName, Xp xp, boolean golden) {
         Snapshot snapshot;
         if (xp.maxLevel()) {
             long total = PetXpCurve.CAP + xp.overflow();
-            snapshot = new Snapshot(true, true, PetXpCurve.MAX_LEVEL, total, xp.overflow(), petName);
+            snapshot = new Snapshot(true, golden, PetXpCurve.MAX_LEVEL, total, xp.overflow(), petName);
         } else {
             long total = PetXpCurve.expAtLevel(level) + xp.current();
-            snapshot = new Snapshot(true, true, level, total, total - PetXpCurve.expAtLevel(level), petName);
+            snapshot = new Snapshot(true, golden, level, total, total - PetXpCurve.expAtLevel(level), petName);
         }
         if (GdragConfig.get().debugVerbose) {
             GdragFlipMod.LOGGER.info("[petwidget] 精确读取：pet='{}' level={} exp={}", petName, level,
