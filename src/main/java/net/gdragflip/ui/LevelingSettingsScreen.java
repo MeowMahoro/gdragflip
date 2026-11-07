@@ -62,6 +62,11 @@ public final class LevelingSettingsScreen extends Screen {
             button.setMessage(slotsLabel(current));
         }).bounds(left, y, WIDTH, HEIGHT).build());
 
+        y += 24;
+        addRenderableWidget(Button.builder(Component.literal("调整 HUD 位置（拖动）"), button ->
+                        this.minecraft.gui.setScreen(new HudEditorScreen()))
+                .bounds(left, y, WIDTH, HEIGHT).build());
+
         y += 32;
         addRenderableWidget(Button.builder(Component.literal("重置本次会话"), button ->
                         LevelingSession.reset())
