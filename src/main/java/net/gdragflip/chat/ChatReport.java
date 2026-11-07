@@ -5,7 +5,9 @@ import net.gdragflip.analysis.GdragAnalysis;
 import net.gdragflip.analysis.GdragCustom;
 import net.gdragflip.analysis.GdragListing;
 import net.gdragflip.analysis.GdragOpportunity;
+import net.gdragflip.analysis.PetXpCurve;
 import net.minecraft.ChatFormatting;
+import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.HoverEvent;
@@ -14,9 +16,8 @@ import net.minecraft.network.chat.MutableComponent;
 import java.net.URI;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 
-/** 把分析结果渲染成聊天消息（价格、排名、可点击的查看拍卖按钮）。 */
+/** 把分析结果渲染成聊天消息（等级+溢出经验、利润、可点击的查看拍卖按钮）。 */
 public final class ChatReport {
     private static final String PREFIX = "[金龙] ";
 
@@ -28,8 +29,7 @@ public final class ChatReport {
                 .append(Component.literal(text).withStyle(color));
     }
 
-    public static void send(FabricClientCommandSource source, GdragAnalysis analysis, int limit,
-                            Map<String, Integer> candyUsed, GdragCustom custom) {
+    public static void send(FabricClientCommandSource source, GdragAnalysis analysis, int limit, GdragCustom custom) {
         source.sendFeedback(info("扫描 %d 条挂单，其中 %d 条 Lvl100+（Lvl200 %d 条）".formatted(
                 analysis.scanned(), analysis.eligibleCount(), analysis.level200Count()), ChatFormatting.GRAY));
 
@@ -39,36 +39,54 @@ public final class ChatReport {
         }
 
         if (!analysis.hasPricing()) {
-            source.sendFeedback(info("无法计算每级均价：缺少 Lvl200 挂单或价格倒挂", ChatFormatting.RED));
+            source.sendFeedback(info("无法计算每经验单价：缺少 Lvl200 挂单或价格倒挂", ChatFormatting.RED));
             GdragListing base = analysis.base();
             if (base != null) {
-                source.sendFeedback(info("当前 Lvl100+ 最低价：Lvl%d · %s".formatted(
-                        base.level(), coins(base.price())), ChatFormatting.YELLOW));
+                source.sendFeedback(info("当前 Lvl100+ 最低价：%s · %s（exp %s）".formatted(
+                        levelLabel(base), coins(base.price()), compact(base.exp())), ChatFormatting.YELLOW));
             }
             return;
         }
 
-        source.sendFeedback(info("基准：Lvl%d 最低 %s ｜ Lvl200 最低 %s ｜ 每级 %s".formatted(
-                analysis.base().level(),
-                coins(analysis.base().price()),
+        GdragListing base = analysis.base();
+        source.sendFeedback(info("基准：A %s %s（exp %s） ｜ B Lvl200 %s ｜ 每 1M XP ≈ %s".formatted(
+                levelLabel(base), coins(base.price()), compact(base.exp()),
                 coins(analysis.target200().price()),
-                coins(Math.round(analysis.avgPerLevel()))), ChatFormatting.GRAY));
+                coins(Math.round(analysis.pricePerExp() * 1_000_000.0))), ChatFormatting.GRAY));
 
         List<GdragOpportunity> below = analysis.belowExpected();
         if (below.isEmpty()) {
             int fallback = Math.min(3, analysis.ranked().size());
             source.sendFeedback(info("没有低于理论价的挂单；下面是最接近的 %d 条：".formatted(fallback),
                     ChatFormatting.YELLOW));
-            print(source, analysis.ranked(), fallback, candyUsed);
+            print(source, analysis.ranked(), fallback);
         } else {
             source.sendFeedback(info("低于理论价 %d 条（按利润降序）：".formatted(below.size()),
                     ChatFormatting.GREEN));
-            print(source, below, Math.min(limit, below.size()), candyUsed);
+            print(source, below, Math.min(limit, below.size()));
         }
 
         if (custom != null) {
             source.sendFeedback(customLine(custom, analysis.ranked().size()));
         }
+    }
+
+    /** 自动扫描命中：玩家聊天栏单行提醒。 */
+    public static void notify(Minecraft client, GdragOpportunity opportunity) {
+        if (client.player == null) {
+            return;
+        }
+        GdragListing listing = opportunity.listing();
+        MutableComponent line = Component.literal(PREFIX).withStyle(ChatFormatting.GOLD)
+                .append(Component.literal("新机会 ").withStyle(ChatFormatting.GREEN))
+                .append(Component.literal(levelLabel(listing)).withStyle(ChatFormatting.GOLD))
+                .append(Component.literal("  " + coins(listing.price())).withStyle(ChatFormatting.WHITE))
+                .append(Component.literal("  " + signedCoins(opportunity.profit())).withStyle(ChatFormatting.GREEN))
+                .append(Component.literal(" (" + signedPercent(opportunity.roi()) + ")").withStyle(ChatFormatting.GRAY))
+                .append(auctionButton(listing.uuid()))
+                .append(webButton(listing.uuid()))
+                .withStyle(style -> style.withHoverEvent(new HoverEvent.ShowText(tooltip(opportunity))));
+        client.player.sendSystemMessage(line);
     }
 
     /** 用户输入的假设挂单：蓝色单行，给出综合排名。 */
@@ -80,47 +98,38 @@ public final class ChatReport {
                 .append(Component.literal("  " + signedCoins(custom.profit())).withStyle(ChatFormatting.BLUE));
 
         return line.withStyle(style -> style.withHoverEvent(new HoverEvent.ShowText(
-                Component.literal("理论价: " + String.format(Locale.ROOT, "%,d", custom.expectedPrice()) + " coins")
+                Component.literal("该等级起点经验: " + String.format(Locale.ROOT, "%,d", custom.exp())
+                                + " XP")
+                        .append(Component.literal("\n理论价: " + String.format(Locale.ROOT, "%,d", custom.expectedPrice())
+                                + " coins"))
                         .append(Component.literal("\n利润率: " + signedPercent(custom.roi()))
                                 .withStyle(ChatFormatting.GRAY)))));
     }
 
-    /** 与 send 展示的条目保持一致，供命令层提前查询 pet candy 状态。 */
-    public static List<GdragOpportunity> selectForDisplay(GdragAnalysis analysis, int limit) {
-        if (!analysis.hasPricing() || analysis.ranked().isEmpty()) {
-            return List.of();
-        }
-        List<GdragOpportunity> below = analysis.belowExpected();
-        if (!below.isEmpty()) {
-            return below.subList(0, Math.min(limit, below.size()));
-        }
-        return analysis.ranked().subList(0, Math.min(3, analysis.ranked().size()));
-    }
-
-    private static void print(FabricClientCommandSource source, List<GdragOpportunity> opportunities,
-                              int count, Map<String, Integer> candyUsed) {
+    private static void print(FabricClientCommandSource source, List<GdragOpportunity> opportunities, int count) {
         for (int i = 0; i < count; i++) {
-            source.sendFeedback(line(i + 1, opportunities.get(i), candyUsed));
+            source.sendFeedback(line(i + 1, opportunities.get(i)));
         }
     }
 
-    private static Component line(int rank, GdragOpportunity opportunity, Map<String, Integer> candyUsed) {
+    private static Component line(int rank, GdragOpportunity opportunity) {
         GdragListing listing = opportunity.listing();
         ChatFormatting profitColor = opportunity.profit() > 0 ? ChatFormatting.GREEN : ChatFormatting.GRAY;
-        Integer candy = candyUsed.get(listing.uuid());
 
         MutableComponent line = Component.literal(" #" + rank + "  ").withStyle(ChatFormatting.DARK_GRAY)
-                .append(Component.literal("Lvl " + listing.level()).withStyle(ChatFormatting.GOLD))
+                .append(Component.literal(levelLabel(listing)).withStyle(ChatFormatting.GOLD))
                 .append(Component.literal("  " + coins(listing.price())).withStyle(ChatFormatting.WHITE))
-                .append(Component.literal("  " + signedCoins(opportunity.profit())).withStyle(profitColor));
+                .append(Component.literal("  理论 " + coins(opportunity.expectedPrice())).withStyle(ChatFormatting.DARK_GRAY))
+                .append(Component.literal("  " + signedCoins(opportunity.profit())).withStyle(profitColor))
+                .append(Component.literal(" (" + signedPercent(opportunity.roi()) + ")").withStyle(ChatFormatting.GRAY));
 
-        if (candy != null && candy > 0) {
-            line.append(Component.literal(" (" + candy + "/10)").withStyle(ChatFormatting.YELLOW));
+        if (listing.candyUsed() > 0) {
+            line.append(Component.literal("  (" + listing.candyUsed() + "/10)").withStyle(ChatFormatting.YELLOW));
         }
 
         line.append(auctionButton(listing.uuid()))
                 .append(webButton(listing.uuid()))
-                .withStyle(style -> style.withHoverEvent(new HoverEvent.ShowText(tooltip(opportunity, candy))));
+                .withStyle(style -> style.withHoverEvent(new HoverEvent.ShowText(tooltip(opportunity))));
 
         return line;
     }
@@ -139,15 +148,22 @@ public final class ChatReport {
                 .withHoverEvent(new HoverEvent.ShowText(Component.literal("打开 sky.coflnet.com 拍卖页"))));
     }
 
-    private static Component tooltip(GdragOpportunity opportunity, Integer candy) {
+    private static Component tooltip(GdragOpportunity opportunity) {
         GdragListing listing = opportunity.listing();
+        long levelStart = PetXpCurve.expAtLevel(listing.level());
+        long overflow = Math.max(0L, listing.exp() - levelStart);
+
         MutableComponent tooltip = Component.literal(listing.itemName()).withStyle(ChatFormatting.GOLD)
+                .append(Component.literal("\n经验: " + String.format(Locale.ROOT, "%,d", listing.exp())
+                        + " XP" + (listing.expKnown() ? "" : "（估算）")).withStyle(ChatFormatting.GRAY))
+                .append(Component.literal("\n等级进度: " + levelLabel(listing)
+                        + "（本级溢出 " + compact(overflow) + " XP）").withStyle(ChatFormatting.GRAY))
                 .append(Component.literal("\n卖家: " + (listing.playerName().isEmpty() ? "未知" : listing.playerName()))
                         .withStyle(ChatFormatting.GRAY))
                 .append(Component.literal("\n价格: " + String.format(Locale.ROOT, "%,d", listing.price()) + " coins")
                         .withStyle(ChatFormatting.GRAY))
-                .append(Component.literal("\n理论价: " + String.format(Locale.ROOT, "%,d", opportunity.expectedPrice()) + " coins")
-                        .withStyle(ChatFormatting.GRAY))
+                .append(Component.literal("\n理论价: " + String.format(Locale.ROOT, "%,d", opportunity.expectedPrice())
+                        + " coins").withStyle(ChatFormatting.GRAY))
                 .append(Component.literal("\n利润: " + signedCoins(opportunity.profit())
                         + " (" + signedPercent(opportunity.roi()) + ")").withStyle(ChatFormatting.GRAY));
 
@@ -155,12 +171,17 @@ public final class ChatReport {
         if (!remaining.isEmpty()) {
             tooltip.append(Component.literal("\n剩余: " + remaining).withStyle(ChatFormatting.GRAY));
         }
-        if (candy != null && candy > 0) {
-            tooltip.append(Component.literal("\nPet Candy: " + candy + "/10").withStyle(ChatFormatting.YELLOW));
+        if (listing.candyUsed() > 0) {
+            tooltip.append(Component.literal("\nPet Candy: " + listing.candyUsed() + "/10").withStyle(ChatFormatting.YELLOW));
         }
 
         tooltip.append(Component.literal("\nUUID: " + listing.uuid()).withStyle(ChatFormatting.DARK_GRAY));
         return tooltip;
+    }
+
+    /** 等级 + 溢出进度；经验未知时退回物品名里的等级。 */
+    private static String levelLabel(GdragListing listing) {
+        return listing.expKnown() ? PetXpCurve.levelLabel(listing.exp()) : "Lvl " + listing.level();
     }
 
     public static String coins(long value) {
@@ -175,6 +196,11 @@ public final class ChatReport {
             return String.format(Locale.ROOT, "%.1fK", value / 1_000.0);
         }
         return Long.toString(value);
+    }
+
+    /** 经验值用的紧凑格式（与金币同样的量级后缀）。 */
+    private static String compact(long value) {
+        return coins(value);
     }
 
     private static String signedCoins(long value) {

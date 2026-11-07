@@ -3,7 +3,7 @@
   "id": "gdragflip",
   "version": "${version}",
   "name": "Golden Dragon Flip",
-  "description": "分析 Hypixel SkyBlock 拍卖行中 100 级以上的 Golden Dragon，按等级线性均价找出低于理论价、适合养到 200 级再卖的挂单。数据源 sky.coflnet.com。",
+  "description": "分析 Hypixel SkyBlock 拍卖行中 100 级以上的 Golden Dragon，按累计经验（等级 + 溢出进度）推算理论价，找出适合养到 200 级再卖的挂单。数据源 sky.coflnet.com。",
   "authors": [
     "GdragFlip"
   ],

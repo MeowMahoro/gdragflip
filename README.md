@@ -1,59 +1,98 @@
 # Golden Dragon Flip
 
-Hypixel SkyBlock 客户端 Fabric mod：分析拍卖行里 **100 级以上的 Golden Dragon**，按「等级线性均价」找出被低估、适合买下养到 200 级再卖的挂单。
+Hypixel SkyBlock 客户端 Fabric mod：分析拍卖行里 **100 级以上的 Golden Dragon**，
+用**累计经验**（等级 + 溢出进度）作为定价坐标，找出被低估、适合买下养到 200 级再卖的挂单。
 
 数据源：`sky.coflnet.com`（Cofl SkyApi，免 Key）。
 
-## 功能
+## 命令
 
-游戏内执行：
+| 命令 | 说明 |
+|---|---|
+| `/gdrag [条数]` | 扫描并显示前 N 条（默认 10，最多 50） |
+| `/gdrag calc <等级> <价格>` | 评估假设挂单，如 `/gdrag calc 125 660m` |
+| `/gdrag refresh` | 跳过 15 秒缓存强制重扫 |
+| `/gdrag auto` | 查看自动扫描状态 |
+| `/gdrag auto on\|off` | 开关自动扫描 |
+| `/gdrag auto interval <秒>` | 设置扫描间隔（默认 60，最低 5；低于 20 秒需 `confirm` 二次确认） |
+| `/gdrag cache clear\|info` | 清空 / 查看经验缓存 |
+| `/gdrag reload` | 重新读取 `config/gdragflip.json` |
+| `/gdrag help` | 命令帮助 |
 
-```
-/gdrag                      # 显示低于理论价的前 10 条
-/gdrag 20                   # 显示前 20 条（1~50）
-/gdrag 125 660m             # 额外评估一个假设挂单：Lvl 125、价格 660M
-/gdrag calculate 125 660m   # 同上（显式形式）
-/gdragflip                  # 同 /gdrag
-```
+`/gdrag 125 660m` 这种旧写法仍然可用（≤50 视为条数，否则视为等级）。
 
-价格支持 `660m`、`1.2b`、`660,000,000` 等写法。自定义挂单会在排名列表之后以**蓝色**单独一行显示，给出它在全部 Lvl100+ 挂单中的综合排名：`[自定义] #3/56  Lvl 125  660.0M  +73.7M`（悬停可看理论价与利润率）。
+价格支持 `660m`、`1.2b`、`660,000,000` 等写法。
 
 输出示例：
 
 ```
-[金龙] 扫描 74 条挂单，其中 60 条 Lvl100+（Lvl200 32 条）
-[金龙] 基准：Lvl100 最低 669.0M ｜ Lvl200 最低 900.0M ｜ 每级 2.31M
+[金龙] 扫描 81 条挂单，其中 68 条 Lvl100+（Lvl200 33 条）
+[金龙] 基准：A Lvl100 +0% 668.9M（exp 25.4M） ｜ B Lvl200 900.0M ｜ 每 1M XP ≈ 1.22M
 [金龙] 低于理论价 9 条（按利润降序）：
- #1  Lvl 131  705.0M  理论 740.6M  利润 +35.6M (+5.1%)  剩 3d2h  [拍卖] [Cofl]
+ #1  Lvl 123 +47%  705.0M  理论 740.6M  +35.6M (+5.1%)  [拍卖] [Cofl]
 ```
 
-- `[拍卖]`：点击执行 `/viewauction <uuid>`，直接在游戏里打开该拍卖（Hypixel 的查看拍卖命令为 `/viewauction`，不是 `/auction`）。
-- `[Cofl]`：点击打开 `https://sky.coflnet.com/auction/<uuid>`。
-- 鼠标悬停可看卖家、精确价格与拍卖 UUID。
-- 如果该金龙使用过 pet candy，行尾会标注 `(N/10)`；未使用过的不标注。详情请求合并为一次 curl 调用（复用连接），单次最多 10 条，结果按 UUID 缓存。
+- `Lvl 123 +47%`：等级 + 当前等级内的经验进度（溢出经验已经计入定价）。
+- 悬停可看累计经验、本级溢出、理论价、卖家、剩余时间、pet candy、UUID。
+- `[拍卖]` 点击执行 `/viewauction <uuid>`；`[Cofl]` 打开对应网页。
 
 ## 算法
 
 1. 拉取全部在挂 `PET_GOLDEN_DRAGON`，只保留 **LEGENDARY + BIN + Lvl ≥ 100**。
-2. 基准 A = 其中价格最低的一条（记录等级 `L0` 与价格 `P0`）。
-3. 基准 B = 200 级中价格最低的一条（`P200`）。
-4. 每级均价 `avg = (P200 - P0) / (200 - L0)`。
-5. 任意挂单理论价 `expected = P0 + (level - L0) × avg`。
-6. 利润 `profit = expected - price`，正数即「低于平均价」；在同一线性假设下它也等于「买下养到 200 再按 P200 卖出」的毛利。
-7. 按 `profit` 降序排名；没有正利润时展示利润最高的 3 条作参考。
+2. 每条挂单查到真实累计经验 `exp`（详情接口的 `flatNbt.exp`）。
+3. **A** = 所有挂单中价格最低的一条（记录其经验 `expA`）。
+4. **B** = 200 级中价格最低的一条，**按"刚好 200 级"处理**：经验取满级 214,023,230，
+   200 级之后的溢出经验不计入收益。
+5. 每经验单价 `pricePerExp = (B价 − A价) / (214,023,230 − expA)`。
+6. 任意挂单理论价 `expected = A价 + (该单经验 − expA) × pricePerExp`；
+   200 级以上的经验在计算时封顶。
+7. 利润 `profit = expected − 价格`，按利润降序排名；没有正利润时展示最接近的 3 条。
+8. `/gdrag calc <等级> <价格>` 按该等级**起点经验**计算（不提供溢出经验输入）。
 
 Lvl 1~99 是 `Golden Dragon Egg`（未破壳、不能装备宠物物品），因此只统计 100 级以上。
 
-## 数据源说明
+### 经验曲线
 
-使用 `GET /api/auctions/active/filter?tags=PET_GOLDEN_DRAGON&pageSize=100&page=N`。
+`src/main/resources/gdragflip/pet_xp.csv`（1~200 级，来源 Hypixel SkyBlock Wiki `Golden_Dragon_Pet` 页）：
 
-没有用 `/api/auctions/tag/{tag}/active/bin`，因为它只返回最低的 10 条；金龙低价挂单基本都是 Lvl 1~9 的蛋，会完全盖住 100 级以上的挂单。
+- 1~100 级：传奇宠物标准曲线，累计 25,353,230 XP
+- 101~200 级：每级固定 1,886,700 XP，满级累计 214,023,230 XP
 
-- 免费接口有速率限制（约 80 次/分钟），mod 每次查询只发 1~N 个分页请求，并在 15 秒内复用上次结果。
-- 查询在后台线程执行，不阻塞游戏。
-- **Cloudflare 兼容**：Cloudflare 会按 TLS 指纹拦截 Java HTTP 客户端（HTTP/1.1、HTTP/2、HttpsURLConnection 实测均返回 403），因此 Java 请求失败后会自动改用系统 `curl`（Windows 自带 `C:\Windows\System32\curl.exe`，macOS/Linux 为 `curl`），并在本次游戏会话内一直使用 curl。
-- 域名按 `sky.coflnet.com` → `sky-commands.coflnet.com` → `sky-mod.coflnet.com` 的顺序回退（后两个是官方 mod 使用的备用域名）。
+等级只是展示用的换算结果，内部一律用累计经验。
+
+## 数据源与限流
+
+- 列表：`GET /api/auctions/active/filter?tags=PET_GOLDEN_DRAGON&pageSize=100&page=N`
+  （不用 `/tag/{tag}/active/bin`，它只返回最低 10 条，且低价基本都是 1~9 级的蛋）。
+- 经验：列表接口**不返回 NBT**，必须逐条 `GET /api/auction/{uuid}` 取 `flatNbt.exp`
+  （同时拿到 `candyUsed`）。
+- **经验永久缓存**：`config/gdragflip-exp-cache.json`（UUID → 经验/糖果）。同一条拍卖的经验不会变化，
+  所以只有新上架的挂单需要查详情；缓存建立后每次扫描通常只需刷新列表。
+- 首次扫描要对全部 100+ 挂单各发一次详情请求（当前市场约 68 条），受额度限制约 **25~40 秒**。
+- Cofl 免费额度：**30 请求/10 秒、100 请求/分钟**；本地限速留了余量（28/10s、92/60s）。
+  官方说明累计 500 次 429 会封 IP，**不要**把间隔调得过低。
+- **Cloudflare 兼容**：Cloudflare 会按 TLS 指纹拦截 Java HTTP 客户端（HTTP/1.1、HTTP/2、
+  HttpsURLConnection 实测均返回 403），因此 Java 请求失败后会自动改用系统 `curl`
+  （Windows 自带 `C:\Windows\System32\curl.exe`，macOS/Linux 为 `curl`），并在本次游戏会话内一直使用 curl。
+- 域名按 `sky.coflnet.com` → `sky-commands.coflnet.com` → `sky-mod.coflnet.com` 的顺序回退。
+
+## 自动扫描
+
+配置文件 `config/gdragflip.json`：
+
+```json
+{
+  "autoScan": false,
+  "intervalSeconds": 60,
+  "minProfit": 5000000,
+  "minRoiPercent": 5.0
+}
+```
+
+- `intervalSeconds`：扫描间隔（秒）。低于 20 秒时命令需要 `confirm` 二次确认，避免打满 API 额度。
+- 命中条件：利润 ≥ `minProfit` **且** ROI ≥ `minRoiPercent`。
+- 同一条拍卖只提醒一次；每轮最多提醒 3 条以避免刷屏。
+- 只在游戏内（有玩家实体）时运行。
 
 ## 构建
 
@@ -65,11 +104,14 @@ gradlew build
 
 产物：`build/libs/gdragflip-<版本>-<MC版本>.jar`，放入 `mods/`，依赖 Fabric Loader 与 Fabric API。
 
-分支对应关系：`main` 面向 MC 26.3，`26.2` 面向 MC 26.2（只需切换 `gradle.properties` 中的 `minecraft_version` / `fabric_api_version` 与 `fabric.mod.json` 的 `minecraft` 依赖）。
+分支对应关系：`main` 面向 MC 26.3，`26.2` 面向 MC 26.2（只需切换 `gradle.properties` 中的
+`minecraft_version` / `fabric_api_version` 与 `fabric.mod.json` 的 `minecraft` 依赖）。
 
 ## 局限
 
 - 价格随挂单实时变动，报告只是请求时刻的快照。
-- 每级均价是**线性近似**；宠物实际升级经验曲线并非线性，真实成本请结合游戏内经验/喂食方案判断。
-- 未扣除拍卖手续费，也未识别宠物物品（pet item）、`candyUsed` 等溢价因素；这些属性会让同等级挂单价格出现偏差。
-- 若市场上没有 200 级挂单，或 200 级最低价低于 100+ 最低价（价格倒挂），则无法计算每级均价，只显示当前最低价。
+- 用最低价 100+ 与最低价 200 级作为两个锚点，属于**单点基准**：一个异常挂单会影响整条曲线
+  （已按需求保留该口径，不做离群过滤）。
+- 未扣除拍卖手续费，未考虑 pet item、皮肤等溢价因素。
+- 若市场上没有 200 级挂单，或 200 级最低价低于 100+ 最低价（价格倒挂），则无法计算每经验单价。
+- 详情查询失败时该挂单会退化为「按等级起点经验」计算，并在悬停里标注「估算」。

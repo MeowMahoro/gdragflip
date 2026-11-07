@@ -111,31 +111,21 @@ public final class CoflClient {
     }
 
     /**
-     * 查询单条拍卖的 pet candy 使用次数（上限 10）。失败返回 -1（未知）。
-     */
-    public static int fetchCandyUsed(String uuid) {
-        try {
-            return candyFromDetail(getJson("auction/" + uuid));
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        } catch (Exception e) {
-            System.err.println("[gdragflip] candy lookup failed: " + uuid + " -> " + e.getMessage());
-        }
-        return -1;
-    }
-
-    /**
-     * 批量查询 pet candy：一个 curl 进程顺序请求多个详情 URL，复用同一条连接。
+     * 批量查询拍卖详情里的宠物经验与糖果数量。
      *
-     * <p>逐条单独起进程时每条都要重新做一次 TLS 握手，实测 10 条约 22s；
-     * 批量复用连接后约 8s。并发请求反而会被 Cloudflare 限速，故不用并发。</p>
+     * <p>列表接口不返回 NBT，exp 只能逐条查 {@code /api/auction/{uuid}}；
+     * 用单个 curl 进程顺序请求多个 URL 复用连接（逐条起进程实测 10 条约 22s，批量约 8s），
+     * 并在发送前按 Cofl 的额度限速。</p>
+     *
+     * @param uuids 需要查询的拍卖 UUID（调用方应只传未命中缓存的）
+     * @return UUID → 详情；查询失败或缺少 exp 的条目不会出现在结果里
      */
-    public static Map<String, Integer> fetchCandyUsedBatch(List<String> uuids) {
+    public static Map<String, PetDetail> fetchPetDetailsBatch(List<String> uuids) {
         if (uuids == null || uuids.isEmpty()) {
             return Map.of();
         }
         for (String base : orderedBases()) {
-            Map<String, Integer> result = fetchCandyUsedBatch(base, uuids);
+            Map<String, PetDetail> result = fetchPetDetailsBatch(base, uuids);
             if (!result.isEmpty()) {
                 preferredBase = base;
                 return result;
@@ -144,7 +134,14 @@ public final class CoflClient {
         return Map.of();
     }
 
-    private static Map<String, Integer> fetchCandyUsedBatch(String base, List<String> uuids) {
+    private static Map<String, PetDetail> fetchPetDetailsBatch(String base, List<String> uuids) {
+        try {
+            RateLimiter.acquire(uuids.size());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Map.of();
+        }
+
         List<String> command = new ArrayList<>(uuids.size() + 12);
         command.add(curlExecutable());
         command.add("-sS");
@@ -172,20 +169,20 @@ public final class CoflClient {
             String output = new String(stdout.join(), StandardCharsets.UTF_8);
             String error = new String(stderr.join(), StandardCharsets.UTF_8).strip();
             if (!error.isEmpty()) {
-                System.err.println("[gdragflip] candy batch curl: " + shorten(error, 200));
+                System.err.println("[gdragflip] detail batch curl: " + shorten(error, 200));
             }
 
             String[] parts = output.split(SEPARATOR, -1);
-            Map<String, Integer> result = new HashMap<>();
+            Map<String, PetDetail> result = new HashMap<>();
             for (int i = 0; i < uuids.size() && i < parts.length; i++) {
                 String body = parts[i].strip();
                 if (body.isEmpty()) {
                     continue;
                 }
                 try {
-                    int candy = candyFromDetail(GSON.fromJson(body, JsonObject.class));
-                    if (candy >= 0) {
-                        result.put(uuids.get(i), candy);
+                    PetDetail detail = detailFromJson(GSON.fromJson(body, JsonObject.class));
+                    if (detail != null) {
+                        result.put(uuids.get(i), detail);
                     }
                 } catch (RuntimeException e) {
                     // 单条失败（例如 Cloudflare 的 HTML）不影响其他条目
@@ -195,25 +192,27 @@ public final class CoflClient {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } catch (Exception e) {
-            System.err.println("[gdragflip] candy batch failed: " + e.getMessage());
+            System.err.println("[gdragflip] detail batch failed: " + e.getMessage());
         }
         return Map.of();
     }
 
-    private static int candyFromDetail(JsonObject root) {
+    /**
+     * 从拍卖详情里解析 exp 与 candyUsed。
+     * 优先用 flatNbt（字符串字段），退回解析 nbtData.data.petInfo。
+     *
+     * @return 解析不出 exp 时返回 null（该挂单将回退到按等级起点经验计算）
+     */
+    private static PetDetail detailFromJson(JsonObject root) {
         if (root == null) {
-            return -1;
+            return null;
         }
 
         JsonObject flatNbt = root.getAsJsonObject("flatNbt");
         if (flatNbt != null) {
-            String value = string(flatNbt, "candyUsed");
-            if (!value.isEmpty()) {
-                try {
-                    return Integer.parseInt(value);
-                } catch (NumberFormatException ignored) {
-                    // 继续尝试 petInfo
-                }
+            long exp = parseLong(string(flatNbt, "exp"));
+            if (exp >= 0) {
+                return new PetDetail(exp, parseInt(string(flatNbt, "candyUsed"), -1));
             }
         }
 
@@ -225,21 +224,49 @@ public final class CoflClient {
                 if (!petInfo.isEmpty()) {
                     try {
                         JsonObject info = GSON.fromJson(petInfo, JsonObject.class);
-                        if (info != null && info.has("candyUsed")) {
-                            return info.get("candyUsed").getAsInt();
+                        if (info != null) {
+                            long exp = info.has("exp") ? info.get("exp").getAsLong() : -1L;
+                            int candy = info.has("candyUsed") ? info.get("candyUsed").getAsInt() : -1;
+                            if (exp >= 0) {
+                                return new PetDetail(exp, candy);
+                            }
                         }
                     } catch (RuntimeException ignored) {
-                        return -1;
+                        return null;
                     }
                 }
             }
         }
-        return -1;
+        return null;
+    }
+
+    /** exp 在 JSON 里是字符串形式的浮点（如 "1252470.1211546964"），也可能是数字。 */
+    private static long parseLong(String value) {
+        if (value == null || value.isEmpty()) {
+            return -1L;
+        }
+        try {
+            return (long) Double.parseDouble(value);
+        } catch (NumberFormatException e) {
+            return -1L;
+        }
+    }
+
+    private static int parseInt(String value, int fallback) {
+        if (value == null || value.isEmpty()) {
+            return fallback;
+        }
+        try {
+            return (int) Double.parseDouble(value);
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
     }
 
     private static JsonObject getJson(String path) throws IOException, InterruptedException {
         IOException lastError = null;
         List<String> bases = orderedBases();
+        RateLimiter.acquire(1);
 
         if (!preferCurl) {
             // 只试一次 Java：Cloudflare 是按 TLS 指纹拦截的，换域名没有意义，

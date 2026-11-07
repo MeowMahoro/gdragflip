@@ -1,6 +1,8 @@
 package net.gdragflip.analysis;
 
 import net.gdragflip.cofl.CoflAuction;
+import net.gdragflip.cofl.ExpCache;
+import net.gdragflip.cofl.PetDetail;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -10,27 +12,29 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 金龙翻新（买 100+ 自养到 200 再卖）的定价分析。
+ * 金龙翻新（买 100+ 自养到满级再卖）的定价分析。
  *
- * <p>算法（与需求一致）：</p>
+ * <p>定价坐标是<b>累计经验</b>而不是等级：等级相同但溢出经验更多的挂单，实际进度更高，</p>
+ * <p>理论价也更高。算法：</p>
  * <ol>
- *   <li>A = 所有 Lvl ≥ 100 传奇金龙 BIN 中价格最低的一条（记录其等级与价格）；</li>
- *   <li>B = 所有 Lvl 200 中价格最低的一条；</li>
- *   <li>每级均价 = (B - A) / (200 - A.level)；</li>
- *   <li>任意挂单理论价 = A.price + (level - A.level) × 每级均价；</li>
- *   <li>理论价 - 实际价 = 利润（正数即"低于平均价"，等价于线性近似下养到 200 的毛利）。</li>
+ *   <li>A = 所有 Lvl ≥ 100 传奇金龙 BIN 中价格最低的一条（记录其经验 expA）；</li>
+ *   <li>B = 所有 Lvl 200 中价格最低的一条，<b>按刚好 200 级处理</b>（经验取满级 214,023,230，忽略溢出）；</li>
+ *   <li>每经验单价 pricePerExp = (B价 - A价) / (满级经验 - expA)；</li>
+ *   <li>任意挂单理论价 = A价 + (该单经验 - expA) × pricePerExp；</li>
+ *   <li>理论价 - 实际价 = 利润（等于"买下养到 200 再按 B 价卖出"的毛利）。</li>
  * </ol>
  */
 public final class GdragAnalyzer {
-    public static final int MIN_LEVEL = 100;
-    public static final int MAX_LEVEL = 200;
-
     private static final Pattern LEVEL_PATTERN = Pattern.compile("^\\[Lvl (\\d+)]\\s*(.*)$");
+    private static final String LEGENDARY = "LEGENDARY";
 
     private GdragAnalyzer() {
     }
 
-    public static GdragAnalysis analyze(List<CoflAuction> auctions) {
+    /**
+     * 把 Cofl 挂单转换成可参与计算的条目（过滤 BIN / 稀有度 / 等级，并用缓存补经验）。
+     */
+    public static List<GdragListing> prepare(List<CoflAuction> auctions) {
         List<GdragListing> listings = new ArrayList<>();
         for (CoflAuction auction : auctions) {
             GdragListing listing = toListing(auction);
@@ -38,8 +42,14 @@ public final class GdragAnalyzer {
                 listings.add(listing);
             }
         }
+        return listings;
+    }
 
-        int level200Count = (int) listings.stream().filter(listing -> listing.level() == MAX_LEVEL).count();
+    public static GdragAnalysis analyze(List<CoflAuction> auctions) {
+        List<GdragListing> listings = prepare(auctions);
+        int level200Count = (int) listings.stream()
+                .filter(listing -> listing.level() == PetXpCurve.MAX_LEVEL)
+                .count();
         if (listings.isEmpty()) {
             return new GdragAnalysis(auctions.size(), 0, 0, null, null, 0.0, List.of());
         }
@@ -50,24 +60,26 @@ public final class GdragAnalyzer {
 
         GdragListing base = listings.stream().min(cheapest).orElseThrow();
         GdragListing target200 = listings.stream()
-                .filter(listing -> listing.level() == MAX_LEVEL)
+                .filter(listing -> listing.level() == PetXpCurve.MAX_LEVEL)
                 .min(cheapest)
                 .orElse(null);
 
-        double avgPerLevel = 0.0;
-        if (target200 != null && target200.level() > base.level()) {
-            avgPerLevel = (target200.price() - base.price()) / (double) (target200.level() - base.level());
+        long baseExp = PetXpCurve.capped(base.exp());
+        double pricePerExp = 0.0;
+        // B 一律按刚好 200 级（满级经验）处理，200 级溢出不计入收益。
+        if (target200 != null && PetXpCurve.CAP - baseExp > 0) {
+            pricePerExp = (target200.price() - base.price()) / (double) (PetXpCurve.CAP - baseExp);
         }
 
         List<GdragOpportunity> ranked = List.of();
-        if (target200 != null && Double.isFinite(avgPerLevel) && avgPerLevel > 0) {
-            final double avg = avgPerLevel;
-            final long basePrice = base.price();
-            final int baseLevel = base.level();
+        if (target200 != null && Double.isFinite(pricePerExp) && pricePerExp > 0) {
+            final double unit = pricePerExp;
+            final long anchorPrice = base.price();
+            final long anchorExp = baseExp;
 
             ranked = listings.stream()
                     .map(listing -> {
-                        long expected = Math.round(basePrice + (listing.level() - baseLevel) * avg);
+                        long expected = expectedPrice(anchorPrice, anchorExp, unit, listing.exp());
                         long profit = expected - listing.price();
                         double roi = listing.price() > 0 ? profit / (double) listing.price() : 0.0;
                         return new GdragOpportunity(listing, expected, profit, roi);
@@ -78,21 +90,21 @@ public final class GdragAnalyzer {
         }
 
         return new GdragAnalysis(auctions.size(), listings.size(), level200Count,
-                base, target200, avgPerLevel, ranked);
+                base, target200, pricePerExp, ranked);
     }
 
     /**
      * 评估一个假设挂单（等级 + 价格）在当前市场中的表现与排名。
-     * 数据不足（没有基准价）时返回 null。
+     * 等级按该级起点经验计算（不提供溢出经验输入）。数据不足时返回 null。
      */
     public static GdragCustom evaluate(GdragAnalysis analysis, int level, long price) {
         if (analysis == null || !analysis.hasPricing() || price <= 0) {
             return null;
         }
 
-        int clampedLevel = Math.max(MIN_LEVEL, Math.min(MAX_LEVEL, level));
-        long expected = Math.round(analysis.base().price()
-                + (clampedLevel - analysis.base().level()) * analysis.avgPerLevel());
+        int clampedLevel = Math.max(PetXpCurve.MIN_LEVEL, Math.min(PetXpCurve.MAX_LEVEL, level));
+        long exp = PetXpCurve.expAtLevel(clampedLevel);
+        long expected = expectedPrice(analysis, exp);
         long profit = expected - price;
         double roi = profit / (double) price;
 
@@ -102,14 +114,24 @@ public final class GdragAnalyzer {
                 rank++;
             }
         }
-        return new GdragCustom(clampedLevel, price, expected, profit, roi, rank);
+        return new GdragCustom(clampedLevel, exp, price, expected, profit, roi, rank);
+    }
+
+    /** 按当前扫描的每经验单价推算某个经验值对应的理论价。 */
+    public static long expectedPrice(GdragAnalysis analysis, long exp) {
+        return expectedPrice(analysis.base().price(), PetXpCurve.capped(analysis.base().exp()),
+                analysis.pricePerExp(), exp);
+    }
+
+    private static long expectedPrice(long anchorPrice, long anchorExp, double pricePerExp, long exp) {
+        return Math.round(anchorPrice + (PetXpCurve.capped(exp) - anchorExp) * pricePerExp);
     }
 
     private static GdragListing toListing(CoflAuction auction) {
         if (!auction.bin() || auction.price() <= 0) {
             return null;
         }
-        if (!"LEGENDARY".equalsIgnoreCase(auction.tier())) {
+        if (!LEGENDARY.equalsIgnoreCase(auction.tier())) {
             return null;
         }
 
@@ -125,12 +147,23 @@ public final class GdragAnalyzer {
         } catch (NumberFormatException e) {
             return null;
         }
-        if (level < MIN_LEVEL) {
+        if (level < PetXpCurve.MIN_LEVEL) {
             return null;
         }
 
+        long levelStart = PetXpCurve.expAtLevel(level);
+        PetDetail detail = ExpCache.get(auction.uuid());
+        boolean expKnown = detail != null;
+        long exp = levelStart;
+        int candyUsed = -1;
+        if (detail != null) {
+            // 经验与等级来自同一份数据，理论上不会矛盾；异常时以等级起点兜底。
+            exp = Math.max(detail.exp(), levelStart);
+            candyUsed = detail.candyUsed();
+        }
+
         boolean egg = matcher.group(2).toLowerCase(Locale.ROOT).contains("egg");
-        return new GdragListing(auction.uuid(), level, auction.price(), egg,
-                itemName, auction.playerName(), auction.endEpochMillis());
+        return new GdragListing(auction.uuid(), level, exp, expKnown, candyUsed,
+                auction.price(), egg, itemName, auction.playerName(), auction.endEpochMillis());
     }
 }
