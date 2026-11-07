@@ -50,6 +50,14 @@ public final class GdragConfig {
     /** 分享槽位数量（1 或 3，取决于 Diana 的 Sharing is Caring）。 */
     public int expShareSlots = 1;
 
+    /** 地牢内没有 Pet Widget 时，是否用 action bar 技能经验估算宠物经验。 */
+    public boolean dungeonEstimateEnabled = true;
+    /** 技能经验 → 宠物经验的估算倍率（金龙是 Combat 宠物，默认 1.5）。 */
+    public double dungeonPetXpMultiplier = 1.5;
+
+    /** 调试：把每次估算/采样写进日志（/gdrag debug on）。 */
+    public boolean debugVerbose = false;
+
     public static GdragConfig get() {
         GdragConfig current = instance;
         if (current != null) {
@@ -115,5 +123,6 @@ public final class GdragConfig {
         hudY = Math.max(0, hudY);
         expShareFactorPercent = Math.max(0.0, Math.min(500.0, expShareFactorPercent));
         expShareSlots = Math.max(1, Math.min(3, expShareSlots));
+        dungeonPetXpMultiplier = Math.max(0.0, Math.min(10.0, dungeonPetXpMultiplier));
     }
 }
