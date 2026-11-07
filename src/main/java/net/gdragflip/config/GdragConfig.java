@@ -38,6 +38,18 @@ public final class GdragConfig {
     /** 只有当利润率不低于该百分比时才提醒。 */
     public double minRoiPercent = 5.0;
 
+    /** 是否显示「升级助手」HUD。 */
+    public boolean levelingHud = false;
+    /** HUD 左上角坐标。 */
+    public int hudX = 4;
+    public int hudY = 4;
+    /** 是否统计 Exp Share 槽位。 */
+    public boolean expShareEnabled = true;
+    /** 分享系数（%）：默认 12% 基础分享率 × 同技能宠物 1.5 倍 = 18%。 */
+    public double expShareFactorPercent = 18.0;
+    /** 分享槽位数量（1 或 3，取决于 Diana 的 Sharing is Caring）。 */
+    public int expShareSlots = 1;
+
     public static GdragConfig get() {
         GdragConfig current = instance;
         if (current != null) {
@@ -99,5 +111,9 @@ public final class GdragConfig {
         intervalSeconds = Math.max(MIN_INTERVAL_SECONDS, intervalSeconds);
         minProfit = Math.max(0L, minProfit);
         minRoiPercent = Math.max(0.0, minRoiPercent);
+        hudX = Math.max(0, hudX);
+        hudY = Math.max(0, hudY);
+        expShareFactorPercent = Math.max(0.0, Math.min(500.0, expShareFactorPercent));
+        expShareSlots = Math.max(1, Math.min(3, expShareSlots));
     }
 }
