@@ -39,7 +39,11 @@ public final class LevelingAssistant {
         Screen screen = pendingScreen;
         if (screen != null) {
             pendingScreen = null;
-            client.gui.setScreen(screen);
+            client.setScreenAndShow(screen);
+        }
+
+        if (client.gui.screen() instanceof net.gdragflip.ui.HudEditorScreen editor) {
+            editor.poll(client);
         }
 
         if (client.player == null) {

@@ -49,14 +49,6 @@ public final class LevelingHud implements HudElement {
             return 0;
         }
 
-        int width = 0;
-        for (Component line : lines) {
-            width = Math.max(width, client.font.width(line));
-        }
-        int height = lines.size() * (client.font.lineHeight + LINE_GAP);
-        // 半透明底框：避免亮色背景下文字看不清。
-        graphics.fill(x - 3, y - 3, x + width + 3, y + height, 0x99000000);
-
         int cursor = y;
         for (Component line : lines) {
             graphics.text(client.font, line, x, cursor, 0xFFFFFFFF);
@@ -126,7 +118,7 @@ public final class LevelingHud implements HudElement {
         // 优先用每个槽位 lore 里写的真实比例；读不到时才退回配置系数。
         long shareTotalXp = 0L;
         List<Long> perPetXp = new ArrayList<>();
-        if (shareEnabled && sessionXp > 0) {
+        if (shareEnabled) {
             if (!sharePets.isEmpty()) {
                 for (ExpShareTracker.SharePet pet : sharePets) {
                     double rate = pet.ratePercent() > 0 ? pet.ratePercent() : config.expShareFactorPercent;
@@ -159,10 +151,21 @@ public final class LevelingHud implements HudElement {
         // ── 分享槽 ────────────────────────────
         if (shareEnabled) {
             lines.add(Component.literal("分享槽：").withStyle(ChatFormatting.YELLOW));
-            lines.add(Component.literal("  Slot x " + (shareKnown ? slots : "?")
-                    + (shareKnown ? "" : "（打开 /pets → Exp Sharing 读取）"))
-                    .withStyle(ChatFormatting.GRAY));
-            if (sessionXp > 0) {
+            String slotText = "  Slot x " + (shareKnown ? slots : "?");
+            if (shareKnown) {
+                double totalRate = 0;
+                for (ExpShareTracker.SharePet pet : sharePets) {
+                    totalRate += pet.ratePercent() > 0 ? pet.ratePercent() : config.expShareFactorPercent;
+                }
+                if (totalRate > 0) {
+                    slotText += " ｜ " + formatRate(totalRate);
+                }
+            } else {
+                slotText += "（打开 /pets → Exp Sharing 读取）";
+            }
+            lines.add(Component.literal(slotText).withStyle(ChatFormatting.GRAY));
+
+            {
                 lines.add(Component.literal("  " + shareMark + signed(shareTotalXp) + " XP"
                         + (pricePerExp > 0 ? " ｜ " + signed(Math.round(shareTotalXp * pricePerExp)) + " coins" : ""))
                         .withStyle(ChatFormatting.WHITE));

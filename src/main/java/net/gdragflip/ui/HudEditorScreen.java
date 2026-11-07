@@ -14,6 +14,8 @@ import net.minecraft.network.chat.Component;
  * 26.3 里事件分发行为有变化，轮询更稳。</p>
  */
 public final class HudEditorScreen extends Screen {
+    private static long lastLogAt;
+
     private boolean dragging;
     private boolean wasDown;
     private double grabOffsetX;
@@ -25,11 +27,15 @@ public final class HudEditorScreen extends Screen {
 
     @Override
     public void tick() {
+        // 兜底：Screen#tick 在部分版本不保证被调用，真正的轮询由 LevelingAssistant 每 tick 驱动。
         Minecraft client = this.minecraft;
-        if (client == null) {
-            return;
+        if (client != null) {
+            poll(client);
         }
+    }
 
+    /** 由客户端 tick 调用，直接读取鼠标状态（不依赖 Screen 的事件分发）。 */
+    public void poll(Minecraft client) {
         double mouseX = client.mouseHandler.getScaledXPos(client.getWindow());
         double mouseY = client.mouseHandler.getScaledYPos(client.getWindow());
         boolean down = client.mouseHandler.isLeftPressed();
@@ -54,6 +60,17 @@ public final class HudEditorScreen extends Screen {
         }
 
         wasDown = down;
+
+        if (GdragConfig.get().debugVerbose) {
+            long now = System.currentTimeMillis();
+            if (now - lastLogAt > 1_000L) {
+                lastLogAt = now;
+                net.gdragflip.GdragFlipMod.LOGGER.info(
+                        "[hudedit] mouse=({}, {}) down={} dragging={} box=({}, {}) {}x{}",
+                        Math.round(mouseX), Math.round(mouseY), down, dragging,
+                        config.hudX, config.hudY, width, height);
+            }
+        }
     }
 
     private static boolean inside(double mouseX, double mouseY, GdragConfig config, int width, int height) {
@@ -61,11 +78,30 @@ public final class HudEditorScreen extends Screen {
                 && mouseY >= config.hudY && mouseY <= config.hudY + height;
     }
 
+    /** 方向键微调（拖动失效时的后备手段）。 */
+    @Override
+    public boolean keyPressed(net.minecraft.client.input.KeyEvent event) {
+        int step = com.mojang.blaze3d.platform.InputConstants.isKeyDown(
+                com.mojang.blaze3d.platform.InputConstants.KEY_LSHIFT) ? 10 : 1;
+        GdragConfig config = GdragConfig.get();
+        switch (event.key()) {
+            case com.mojang.blaze3d.platform.InputConstants.KEY_LEFT -> config.hudX = Math.max(0, config.hudX - step);
+            case com.mojang.blaze3d.platform.InputConstants.KEY_RIGHT -> config.hudX += step;
+            case com.mojang.blaze3d.platform.InputConstants.KEY_UP -> config.hudY = Math.max(0, config.hudY - step);
+            case com.mojang.blaze3d.platform.InputConstants.KEY_DOWN -> config.hudY += step;
+            default -> {
+                return super.keyPressed(event);
+            }
+        }
+        GdragConfig.save();
+        return true;
+    }
+
     @Override
     public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
         GdragConfig config = GdragConfig.get();
         graphics.centeredText(this.font, this.title, this.width / 2, 8, 0xFFFFFFFF);
-        graphics.centeredText(this.font, Component.literal("按住 HUD 拖动；松手自动保存"),
+        graphics.centeredText(this.font, Component.literal("按住 HUD 拖动；方向键微调（Shift 加速）"),
                 this.width / 2, 20, 0xFFAAAAAA);
 
         LevelingHud.render(graphics, this.minecraft, config.hudX, config.hudY);

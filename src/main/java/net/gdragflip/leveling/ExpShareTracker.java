@@ -25,9 +25,9 @@ import java.util.regex.Pattern;
 public final class ExpShareTracker {
     private static final Pattern RATE_PATTERN = Pattern.compile("([\\d.]+)\\s*%\\s+of");
     /** 玻璃标记（ACTIVE / DISABLED），决定槽位是否生效以及分享比例。 */
-    private static final int[] MARKER_SLOTS = {30, 31, 32};
+    private static final int[] MARKER_SLOTS = {21, 22, 23};
     /** 宠物本体：标记正下方一排的同一列。 */
-    private static final int[] PET_SLOTS = {39, 40, 41};
+    private static final int[] PET_SLOTS = {30, 31, 32};
     private static final String MENU_TITLE = "Exp Sharing";
 
     private static volatile List<SharePet> pets = List.of();

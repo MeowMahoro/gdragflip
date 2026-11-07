@@ -7,6 +7,7 @@ import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
+import net.gdragflip.GdragFlipMod;
 import net.gdragflip.analysis.GdragAnalyzer;
 import net.gdragflip.analysis.GdragCustom;
 import net.gdragflip.analysis.PetXpCurve;
@@ -79,6 +80,7 @@ public final class GdragCommand {
                 .then(ClientCommands.literal("debug")
                         .then(ClientCommands.literal("tab").executes(GdragCommand::debugTab))
                         .then(ClientCommands.literal("state").executes(GdragCommand::debugState))
+                        .then(ClientCommands.literal("share").executes(GdragCommand::debugShare))
                         .then(ClientCommands.literal("on").executes(context -> setDebug(context, true)))
                         .then(ClientCommands.literal("off").executes(context -> setDebug(context, false))))
 
@@ -411,6 +413,32 @@ public final class GdragCommand {
         source.sendFeedback(ChatReport.info("单价：%s coins/XP ｜ 详细日志：%s".formatted(
                 price > 0 ? String.format("%.4f", price) : "行情未就绪",
                 GdragConfig.get().debugVerbose ? "开" : "关"), ChatFormatting.GRAY));
+        return 1;
+    }
+
+    /** 把 Exp Sharing 界面 18~40 号槽位的内容写进日志，用于校准槽位坐标。 */
+    private static int debugShare(CommandContext<FabricClientCommandSource> context) {
+        FabricClientCommandSource source = context.getSource();
+        Minecraft client = Minecraft.getInstance();
+        if (!(client.gui.screen() instanceof net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<?> screen)
+                || !screen.getTitle().getString().contains("Exp Sharing")) {
+            source.sendFeedback(ChatReport.info("请先打开 /pets → Exp Sharing 界面再执行", ChatFormatting.RED));
+            return 0;
+        }
+
+        net.minecraft.world.inventory.AbstractContainerMenu menu = screen.getMenu();
+        GdragFlipMod.LOGGER.info("[share] ---- Exp Sharing 槽位转储 (size={}) ----", menu.slots.size());
+        for (int slot = 18; slot < menu.slots.size() && slot <= 44; slot++) {
+            net.minecraft.world.item.ItemStack stack = menu.getSlot(slot).getItem();
+            if (stack.isEmpty()) {
+                continue;
+            }
+            String name = stack.getHoverName().getString().replaceAll("§.", "");
+            String lore = net.gdragflip.leveling.PetNbt.loreText(stack)
+                    .replaceAll("§.", "").replace("\n", " / ").trim();
+            GdragFlipMod.LOGGER.info("[share] slot={} name='{}' lore='{}'", slot, name, lore);
+        }
+        source.sendFeedback(ChatReport.info("已写入 latest.log，搜索 [share]", ChatFormatting.GREEN));
         return 1;
     }
 
