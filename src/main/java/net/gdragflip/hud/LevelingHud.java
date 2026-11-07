@@ -150,6 +150,9 @@ public final class LevelingHud implements HudElement {
             String label = "合计（主宠+分享）" + signed(totalXp) + " XP";
             if (pricePerExp > 0) {
                 label += " ｜ " + signed(Math.round(totalXp * pricePerExp)) + " coins";
+                if (rateReady) {
+                    label += " ｜ " + signed(Math.round(totalXp * pricePerExp / hours)) + "/h";
+                }
             }
             lines.add(Component.literal(label).withStyle(ChatFormatting.GOLD));
         }
