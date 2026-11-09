@@ -66,11 +66,18 @@ public final class LevelingSession {
     private static double estimateFactor = 1.0;
     /** 自上次校准点以来「未乘系数」的估算经验，用于一次解出系数。 */
     private static long rawSinceAnchor;
-    /** 绑定时宠物的真实累计经验；用于给会话累计加硬上限（防止估算虚高）。 */
-    private static long bindStartExp = -1L;
-    /** 校准最少需要的样本量（经验）与时间间隔，样本太小时不更新系数。 */
+    /** 自上次校准点以来通过精确数据（Pet Widget）累加的经验。 */
+    private static long preciseSinceAnchor;
+    /** 自上次校准点以来的估算事件次数。 */
+    private static int estimateEvents;
+
+    /** 校准门槛：段内必须「全部是估算」且样本足够，否则只对齐总量、不改系数。 */
     private static final long MIN_CALIBRATION_XP = 50_000L;
     private static final long MIN_CALIBRATION_MILLIS = 60_000L;
+    private static final int MIN_CALIBRATION_EVENTS = 10;
+    /** 合理系数区间：低于 0.8 或高于 2.5 视为 action bar 丢消息严重，不采用。 */
+    private static final double FACTOR_MIN = 0.8;
+    private static final double FACTOR_MAX = 2.5;
     private static Path file;
 
     private LevelingSession() {
@@ -89,7 +96,6 @@ public final class LevelingSession {
         String boundPetName;
         String boundPetCore;
         boolean boundConfident;
-        long bindStartExp;
     }
 
     public static synchronized void load() {
@@ -111,9 +117,11 @@ public final class LevelingSession {
                         ? coreName(boundPetName)
                         : stored.boundPetCore;
                 boundConfident = stored.boundConfident;
-                bindStartExp = stored.bindStartExp;
                 if (stored.estimateFactor > 0.0) {
-                    estimateFactor = clampFactor(stored.estimateFactor);
+                    // 存档里的系数若落在合理区间外，说明之前学歪了，直接重置为 1.0。
+                    estimateFactor = (stored.estimateFactor >= FACTOR_MIN && stored.estimateFactor <= FACTOR_MAX)
+                            ? stored.estimateFactor
+                            : 1.0;
                 }
                 if (stored.startedAt > 0) {
                     startedAt = stored.startedAt;
@@ -143,7 +151,6 @@ public final class LevelingSession {
             stored.boundPetName = boundPetName;
             stored.boundPetCore = boundPetCore;
             stored.boundConfident = boundConfident;
-            stored.bindStartExp = bindStartExp;
             try (Writer writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8)) {
                 GSON.toJson(stored, writer);
             }
@@ -217,20 +224,11 @@ public final class LevelingSession {
         long delta = total - lastTotalExp;
         if (delta > 0 && delta <= MAX_DELTA) {
             totalXp += delta;
+            // 精确增量会污染「真实/估算」比值，记录下来让校准跳过这一段的系数学习。
+            preciseSinceAnchor += delta;
             dirty = true;
         }
         lastTotalExp = total;
-
-        // 硬上限：会话累计不可能超过「当前宠物经验 − 绑定时的起始经验」。
-        // 估算系数学歪时不至于把累计越算越大。
-        if (bindStartExp > 0 && total >= bindStartExp) {
-            long cap = total - bindStartExp;
-            if (totalXp > cap) {
-                GdragFlipMod.LOGGER.info("会话累计超过真实成长，已压回：{} -> {}", totalXp, cap);
-                totalXp = cap;
-                dirty = true;
-            }
-        }
     }
 
     /** 仅由命令 / 设置界面调用。 */
@@ -259,7 +257,8 @@ public final class LevelingSession {
         lastRealAt = 0L;
         totalAtLastReal = 0L;
         rawSinceAnchor = 0L;
-        bindStartExp = -1L;
+        preciseSinceAnchor = 0L;
+        estimateEvents = 0;
         lastRealPetId = "";
         pendingRebaseline = false;
         estimateFactor = 1.0;
@@ -292,6 +291,7 @@ public final class LevelingSession {
         }
         lastEstimateAt = now;
         rawSinceAnchor += xp;
+        estimateEvents++;
         totalXp += Math.max(1L, Math.round(xp * estimateFactor));
         dirty = true;
     }
@@ -442,7 +442,9 @@ public final class LevelingSession {
             boundPetCore = coreName(name);
             boundConfident = confident && !id.isEmpty();
             startedAt = System.currentTimeMillis();
-            bindStartExp = exp;
+            rawSinceAnchor = 0L;
+            preciseSinceAnchor = 0L;
+            estimateEvents = 0;
             lastRealExp = exp;
             totalAtLastReal = 0L;
             lastRealPetId = id;
@@ -529,25 +531,38 @@ public final class LevelingSession {
                 totalXp = totalAtLastReal + realDelta;
                 dirty = true;
 
-                // 直接解出系数：真实增量 / 未修正的估算增量（一次即可收敛）。
+                // 只有「纯估算段」且样本充足时才学系数：
+                // 段内混入精确增量时，真实/估算的比值没有意义，只对齐总量。
+                boolean estimateOnly = preciseSinceAnchor == 0L;
                 boolean enoughSample = rawSinceAnchor >= MIN_CALIBRATION_XP
-                        && sinceLastRead >= MIN_CALIBRATION_MILLIS;
-                if (enoughSample) {
+                        && sinceLastRead >= MIN_CALIBRATION_MILLIS
+                        && estimateEvents >= MIN_CALIBRATION_EVENTS;
+
+                if (estimateOnly && enoughSample) {
                     double ideal = realDelta / (double) rawSinceAnchor;
-                    if (ideal > 0.2 && ideal < 5.0) {
+                    if (ideal >= FACTOR_MIN && ideal <= FACTOR_MAX) {
                         estimateFactor = clampFactor(ideal);
-                        GdragFlipMod.LOGGER.info("校准收敛：真实 +{}，未修正估算 +{} → 系数 {}",
-                                realDelta, rawSinceAnchor, String.format("%.3f", estimateFactor));
+                        GdragFlipMod.LOGGER.info("校准收敛：真实 +{}，未修正估算 +{}（{} 次）→ 系数 {}",
+                                realDelta, rawSinceAnchor, estimateEvents,
+                                String.format("%.3f", estimateFactor));
+                    } else {
+                        GdragFlipMod.LOGGER.info(
+                                "校准样本弃用：真实 +{} ÷ 估算 +{} = {}，超出 {}~{}（疑似 action bar 丢消息）",
+                                realDelta, rawSinceAnchor, String.format("%.2f", ideal), FACTOR_MIN, FACTOR_MAX);
                     }
                 } else {
-                    GdragFlipMod.LOGGER.info("经验已校准（样本不足，暂不更新系数）：真实 +{}，估算 +{}",
-                            realDelta, estimateDelta);
+                    GdragFlipMod.LOGGER.info("校准只对齐总量（{}）：真实 +{}，估算 +{}",
+                            estimateOnly ? "样本不足" : "段内含精确数据", realDelta, estimateDelta);
                 }
                 rawSinceAnchor = 0L;
+                preciseSinceAnchor = 0L;
+                estimateEvents = 0;
             } else if (realDelta == 0 && estimateDelta > 0 && sinceLastRead >= 60_000L) {
                 // 一分钟以上真实经验没动但估算涨了：说明估算在空转，抹掉这段虚增。
                 totalXp = totalAtLastReal;
                 rawSinceAnchor = 0L;
+                preciseSinceAnchor = 0L;
+                estimateEvents = 0;
                 dirty = true;
                 GdragFlipMod.LOGGER.info("经验校准：真实未增长，撤销估算 +{}", estimateDelta);
             }
@@ -577,6 +592,16 @@ public final class LevelingSession {
         return rawSinceAnchor;
     }
 
+    /** 自上次校准点以来通过精确数据累加的经验（调试用）。 */
+    public static synchronized long preciseSinceAnchor() {
+        return preciseSinceAnchor;
+    }
+
+    /** 自上次校准点以来的估算事件次数（调试用）。 */
+    public static synchronized int estimateEvents() {
+        return estimateEvents;
+    }
+
     /** 名字是否与绑定的宠物一致（用于升级消息锚点）。 */
     public static synchronized boolean matchesBound(String name) {
         if (boundPetId.isEmpty()) {
@@ -588,7 +613,7 @@ public final class LevelingSession {
     }
 
     private static double clampFactor(double value) {
-        return Math.max(0.2, Math.min(5.0, value));
+        return Math.max(FACTOR_MIN, Math.min(FACTOR_MAX, value));
     }
 
     public static synchronized long totalXp() {

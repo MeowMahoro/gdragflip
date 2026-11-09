@@ -400,13 +400,23 @@ public final class GdragCommand {
                 LevelingSession.dungeonMillis() / 60_000L,
                 LevelingSession.estimateFactor(),
                 estimateAge < 0 ? "从未" : (estimateAge / 1000) + " 秒前"), ChatFormatting.GRAY));
-        source.sendFeedback(ChatReport.info("待校准样本：%s XP（≥5 万且间隔 ≥60 秒才会更新系数）".formatted(
-                ChatReport.coins(LevelingSession.rawSinceAnchor())), ChatFormatting.DARK_GRAY));
+        source.sendFeedback(ChatReport.info("待校准样本：估算 %s XP / %d 次 ｜ 精确 %s XP".formatted(
+                ChatReport.coins(LevelingSession.rawSinceAnchor()),
+                LevelingSession.estimateEvents(),
+                ChatReport.coins(LevelingSession.preciseSinceAnchor())), ChatFormatting.DARK_GRAY));
+        source.sendFeedback(ChatReport.info(
+                "系数更新条件：纯估算段 + ≥5 万 XP + ≥60 秒 + ≥10 次，且结果在 0.8~2.5",
+                ChatFormatting.DARK_GRAY));
 
         source.sendFeedback(ChatReport.info("Widget：found=%s pet='%s' level=%d exp=%s ｜ Widget 检测=%s".formatted(
                 snapshot.found(), snapshot.petName(), snapshot.level(),
                 ChatReport.coins(snapshot.totalExp()),
                 LevelingSession.widgetDetected() ? "是" : "否"), ChatFormatting.GRAY));
+
+        double base = GdragConfig.get().dungeonPetXpMultiplier;
+        double factor = LevelingSession.estimateFactor();
+        source.sendFeedback(ChatReport.info("Eff: 1 Combat XP -> %.2f pet XP (base %.2f * f%.3f)".formatted(
+                base * factor, base, factor), ChatFormatting.GRAY));
 
         double price = ScanService.lastResult() != null && ScanService.lastResult().hasPricing()
                 ? ScanService.lastResult().pricePerExp() : 0.0;
