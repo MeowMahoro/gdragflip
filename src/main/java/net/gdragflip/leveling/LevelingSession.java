@@ -4,7 +4,6 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import net.fabricmc.loader.api.FabricLoader;
 import net.gdragflip.GdragFlipMod;
-import net.gdragflip.analysis.PetXpCurve;
 
 import java.io.Reader;
 import java.io.Writer;
@@ -573,20 +572,6 @@ public final class LevelingSession {
         totalAtLastReal = totalXp;
     }
 
-    /**
-     * 用「升级消息」作为免费锚点：{@code Your Golden Dragon leveled up to level N!}
-     * 表示此刻累计经验 ≈ 该等级起点经验，不需要打开菜单也能校准。
-     */
-    public static synchronized void onLevelUpAnchor(int level) {
-        if (level <= 1) {
-            return;
-        }
-        long exp = PetXpCurve.expAtLevel(level);
-        if (exp > 0) {
-            onRealExpRead(exp, lastRealPetId);
-        }
-    }
-
     /** 自上次校准点以来未修正的估算经验（调试用）。 */
     public static synchronized long rawSinceAnchor() {
         return rawSinceAnchor;
@@ -600,16 +585,6 @@ public final class LevelingSession {
     /** 自上次校准点以来的估算事件次数（调试用）。 */
     public static synchronized int estimateEvents() {
         return estimateEvents;
-    }
-
-    /** 名字是否与绑定的宠物一致（用于升级消息锚点）。 */
-    public static synchronized boolean matchesBound(String name) {
-        if (boundPetId.isEmpty()) {
-            return false;
-        }
-        String boundCore = boundPetCore.isEmpty() ? coreName(boundPetName) : boundPetCore;
-        String observed = coreName(name);
-        return !boundCore.isEmpty() && !observed.isEmpty() && namesMatch(observed, boundCore);
     }
 
     private static double clampFactor(double value) {
