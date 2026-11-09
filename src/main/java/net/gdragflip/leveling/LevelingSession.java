@@ -66,6 +66,8 @@ public final class LevelingSession {
     private static double estimateFactor = 1.0;
     /** 自上次校准点以来「未乘系数」的估算经验，用于一次解出系数。 */
     private static long rawSinceAnchor;
+    /** 绑定时宠物的真实累计经验；用于给会话累计加硬上限（防止估算虚高）。 */
+    private static long bindStartExp = -1L;
     /** 校准最少需要的样本量（经验）与时间间隔，样本太小时不更新系数。 */
     private static final long MIN_CALIBRATION_XP = 50_000L;
     private static final long MIN_CALIBRATION_MILLIS = 60_000L;
@@ -87,6 +89,7 @@ public final class LevelingSession {
         String boundPetName;
         String boundPetCore;
         boolean boundConfident;
+        long bindStartExp;
     }
 
     public static synchronized void load() {
@@ -108,6 +111,7 @@ public final class LevelingSession {
                         ? coreName(boundPetName)
                         : stored.boundPetCore;
                 boundConfident = stored.boundConfident;
+                bindStartExp = stored.bindStartExp;
                 if (stored.estimateFactor > 0.0) {
                     estimateFactor = clampFactor(stored.estimateFactor);
                 }
@@ -139,6 +143,7 @@ public final class LevelingSession {
             stored.boundPetName = boundPetName;
             stored.boundPetCore = boundPetCore;
             stored.boundConfident = boundConfident;
+            stored.bindStartExp = bindStartExp;
             try (Writer writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8)) {
                 GSON.toJson(stored, writer);
             }
@@ -215,6 +220,17 @@ public final class LevelingSession {
             dirty = true;
         }
         lastTotalExp = total;
+
+        // 硬上限：会话累计不可能超过「当前宠物经验 − 绑定时的起始经验」。
+        // 估算系数学歪时不至于把累计越算越大。
+        if (bindStartExp > 0 && total >= bindStartExp) {
+            long cap = total - bindStartExp;
+            if (totalXp > cap) {
+                GdragFlipMod.LOGGER.info("会话累计超过真实成长，已压回：{} -> {}", totalXp, cap);
+                totalXp = cap;
+                dirty = true;
+            }
+        }
     }
 
     /** 仅由命令 / 设置界面调用。 */
@@ -243,6 +259,7 @@ public final class LevelingSession {
         lastRealAt = 0L;
         totalAtLastReal = 0L;
         rawSinceAnchor = 0L;
+        bindStartExp = -1L;
         lastRealPetId = "";
         pendingRebaseline = false;
         estimateFactor = 1.0;
@@ -425,6 +442,7 @@ public final class LevelingSession {
             boundPetCore = coreName(name);
             boundConfident = confident && !id.isEmpty();
             startedAt = System.currentTimeMillis();
+            bindStartExp = exp;
             lastRealExp = exp;
             totalAtLastReal = 0L;
             lastRealPetId = id;
