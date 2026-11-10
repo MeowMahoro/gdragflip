@@ -404,9 +404,10 @@ public final class GdragCommand {
                 ChatReport.coins(LevelingSession.rawSinceAnchor()),
                 LevelingSession.estimateEvents(),
                 ChatReport.coins(LevelingSession.preciseSinceAnchor())), ChatFormatting.DARK_GRAY));
-        source.sendFeedback(ChatReport.info(
-                "系数更新条件：纯估算段 + ≥5 万 XP + ≥60 秒 + ≥10 次，且结果在 0.8~2.5",
-                ChatFormatting.DARK_GRAY));
+        String calNote = LevelingSession.lastCalibrationNote();
+        if (!calNote.isEmpty()) {
+            source.sendFeedback(ChatReport.info("LastCal: " + calNote, ChatFormatting.DARK_GRAY));
+        }
 
         source.sendFeedback(ChatReport.info("Widget：found=%s pet='%s' level=%d exp=%s ｜ Widget 检测=%s".formatted(
                 snapshot.found(), snapshot.petName(), snapshot.level(),

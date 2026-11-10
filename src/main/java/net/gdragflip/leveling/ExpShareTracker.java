@@ -130,9 +130,28 @@ public final class ExpShareTracker {
             read.add(new SharePet(PetNbt.name(petStack), level, exp, type, rate));
         }
 
+        boolean changed = enabled != observedSlots || !read.equals(pets);
         pets = List.copyOf(read);
         observedSlots = enabled;
         lastReadAt = System.currentTimeMillis();
+
+        // 数据有变化才提示一次（同一轮菜单打开期间只提示一次）。
+        if (changed && client.player != null) {
+            double rate = 0.0;
+            for (SharePet pet : read) {
+                rate += pet.ratePercent();
+            }
+            StringBuilder msg = new StringBuilder("Exp Share 已更新 · Slot x").append(enabled);
+            if (rate > 0) {
+                msg.append(" · ").append(rate == Math.floor(rate)
+                        ? String.valueOf((int) rate) : String.format(Locale.ROOT, "%.1f", rate)).append("%");
+            }
+            if (!read.isEmpty()) {
+                msg.append(" · ").append(read.get(0).name());
+            }
+            client.player.sendSystemMessage(net.gdragflip.chat.ChatReport.info(
+                    msg.toString(), net.minecraft.ChatFormatting.GREEN));
+        }
 
         if (net.gdragflip.config.GdragConfig.get().debugVerbose) {
             net.gdragflip.GdragFlipMod.LOGGER.info("[expshare] enabled={} pets={}", enabled, read);

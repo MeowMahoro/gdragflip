@@ -67,6 +67,8 @@ public final class LevelingSession {
     private static long pseudoExp = -1L;
     private static long pseudoAt;
     private static long lastWidgetSeenAt;
+    /** 最近一次校准的结果说明（调试用）。 */
+    private static String lastCalibrationNote = "";
     private static final long PSEUDO_VISIBLE_MILLIS = 15_000L;
     /** 自上次校准点以来「未乘系数」的估算经验，用于一次解出系数。 */
     private static long rawSinceAnchor;
@@ -577,28 +579,31 @@ public final class LevelingSession {
                 totalXp = totalAtLastReal + realDelta;
                 dirty = true;
 
-                // 只有「纯估算段」且样本充足时才学系数：
-                // 段内混入精确增量时，真实/估算的比值没有意义，只对齐总量。
-                boolean estimateOnly = preciseSinceAnchor == 0L;
+                // 学系数：把段内的精确增量减掉，剩下的才是估算贡献。
+                // （只要求「段内有估算」而不要求「纯估算」，否则出本后必开 /pets 就永远学不到）
+                long estimatePortion = realDelta - preciseSinceAnchor;
                 boolean enoughSample = rawSinceAnchor >= MIN_CALIBRATION_XP
                         && sinceLastRead >= MIN_CALIBRATION_MILLIS
                         && estimateEvents >= MIN_CALIBRATION_EVENTS;
 
-                if (estimateOnly && enoughSample) {
-                    double ideal = realDelta / (double) rawSinceAnchor;
+                if (enoughSample && estimatePortion > 0) {
+                    double ideal = estimatePortion / (double) rawSinceAnchor;
                     if (ideal >= FACTOR_MIN && ideal <= FACTOR_MAX) {
                         estimateFactor = clampFactor(ideal);
-                        GdragFlipMod.LOGGER.info("校准收敛：真实 +{}，未修正估算 +{}（{} 次）→ 系数 {}",
-                                realDelta, rawSinceAnchor, estimateEvents,
-                                String.format("%.3f", estimateFactor));
+                        lastCalibrationNote = "系数 %.3f（真实 +%d − 精确 %d = 估算 %d ÷ 未修正 %d）".formatted(
+                                estimateFactor, realDelta, preciseSinceAnchor, estimatePortion, rawSinceAnchor);
+                        GdragFlipMod.LOGGER.info("校准收敛：{}", lastCalibrationNote);
                     } else {
-                        GdragFlipMod.LOGGER.info(
-                                "校准样本弃用：真实 +{} ÷ 估算 +{} = {}，超出 {}~{}（疑似 action bar 丢消息）",
-                                realDelta, rawSinceAnchor, String.format("%.2f", ideal), FACTOR_MIN, FACTOR_MAX);
+                        lastCalibrationNote = "样本弃用：估算 %.2f/XP 超出 %.1f~%.1f".formatted(
+                                ideal, FACTOR_MIN, FACTOR_MAX);
+                        GdragFlipMod.LOGGER.info("校准样本弃用：估算贡献 {} ÷ 未修正 {} = {}，超出 {}~{}",
+                                estimatePortion, rawSinceAnchor, String.format("%.2f", ideal),
+                                FACTOR_MIN, FACTOR_MAX);
                     }
                 } else {
-                    GdragFlipMod.LOGGER.info("校准只对齐总量（{}）：真实 +{}，估算 +{}",
-                            estimateOnly ? "样本不足" : "段内含精确数据", realDelta, estimateDelta);
+                    lastCalibrationNote = "只对齐总量（%s）：真实 +%d，估算 +%d".formatted(
+                            enoughSample ? "估算贡献非正" : "样本不足", realDelta, estimateDelta);
+                    GdragFlipMod.LOGGER.info("校准{}", lastCalibrationNote);
                 }
                 rawSinceAnchor = 0L;
                 preciseSinceAnchor = 0L;
@@ -632,6 +637,11 @@ public final class LevelingSession {
     /** 自上次校准点以来的估算事件次数（调试用）。 */
     public static synchronized int estimateEvents() {
         return estimateEvents;
+    }
+
+    /** 最近一次校准的结果说明（调试用）。 */
+    public static synchronized String lastCalibrationNote() {
+        return lastCalibrationNote;
     }
 
     private static double clampFactor(double value) {
