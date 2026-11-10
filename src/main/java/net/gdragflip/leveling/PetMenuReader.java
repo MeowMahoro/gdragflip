@@ -2,6 +2,7 @@ package net.gdragflip.leveling;
 
 import com.google.gson.JsonObject;
 import net.gdragflip.GdragFlipMod;
+import net.gdragflip.analysis.PetXpCurve;
 import net.gdragflip.chat.ChatReport;
 import net.gdragflip.config.GdragConfig;
 import net.minecraft.ChatFormatting;
@@ -14,20 +15,21 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 打开 {@code /pets} 菜单时读取「当前出战」金龙的 UUID 与真实经验。
+ * 读取 {@code /pets} 菜单。
  *
- * <p>用途：</p>
+ * <p>两种用途：</p>
  * <ol>
- *   <li>会话开始时绑定宠物 UUID（{@code /gdrag session start} 后打开菜单即完成绑定）；</li>
- *   <li>之后每次打开菜单都用真实经验校准地牢内的估算值。</li>
+ *   <li><b>绑定</b>：{@code /gdrag session start} 后打开菜单，取 petInfo.active 那只金龙并记录 UUID；</li>
+ *   <li><b>校准</b>：绑定后每次打开菜单，只按 <b>UUID</b> 在列表里找同一只宠物（与是否出战无关），
+ *       找不到就提示翻页。</li>
  * </ol>
  */
 public final class PetMenuReader {
     private static final String MENU_TITLE = "Pets";
     private static final String GOLDEN_DRAGON = "GOLDEN_DRAGON";
     private static int cooldown;
-    private static long lastMismatchAt;
-    private static long lastBindWarnAt;
+    private static long lastReportAt;
+    private static String lastReport = "";
     private static long lastShareHintAt;
 
     private PetMenuReader() {
@@ -46,9 +48,10 @@ public final class PetMenuReader {
         cooldown = 20;
 
         AbstractContainerMenu menu = screen.getMenu();
-        List<Pet> goldens = new ArrayList<>();
+        List<Pet> pets = new ArrayList<>();
         Pet activeGolden = null;
         Pet activeOther = null;
+
         for (int slot = 0; slot < menu.slots.size(); slot++) {
             ItemStack stack = menu.getSlot(slot).getItem();
             if (stack.isEmpty()) {
@@ -62,75 +65,84 @@ public final class PetMenuReader {
             if (exp <= 0) {
                 continue;
             }
-            Pet pet = new Pet(petId(info), PetNbt.name(stack), exp);
+            Pet pet = new Pet(PetNbt.id(info), PetNbt.name(stack), exp);
+            pets.add(pet);
             boolean golden = GOLDEN_DRAGON.equalsIgnoreCase(PetNbt.type(info));
             boolean active = isActive(info);
 
-            if (GdragConfig.get().debugVerbose || LevelingSession.pendingBind()) {
+            if (GdragConfig.get().debugVerbose) {
                 GdragFlipMod.LOGGER.info("[petmenu] slot={} name='{}' type={} active={} id={} exp={}",
                         slot, pet.name(), PetNbt.type(info), active, pet.id(), exp);
             }
 
-            if (golden) {
-                goldens.add(pet);
-            }
             if (active) {
-                if (golden) {
-                    if (activeGolden == null) {
-                        activeGolden = pet;
-                    }
-                } else if (activeOther == null) {
+                if (golden && activeGolden == null) {
+                    activeGolden = pet;
+                } else if (!golden && activeOther == null) {
                     activeOther = pet;
                 }
             }
         }
 
-        // 只认菜单里的 petInfo.active 标记；没有标记就不猜（宁可提示也不要绑错）。
-        Pet target = activeGolden;
-        if (target == null) {
-            if (LevelingSession.bound() || LevelingSession.pendingBind()) {
-                warnBind(client, "当前出战的是 "
-                        + (activeOther != null ? activeOther.name() : "非金龙宠物")
-                        + "（或菜单未标记 active），请召唤要升级的金龙后再打开 /pets");
+        // 1) 等待绑定：只认 active 的金龙
+        if (LevelingSession.pendingBind()) {
+            if (activeGolden == null) {
+                report(client, "未找到出战金龙（当前："
+                        + (activeOther != null ? activeOther.name() : "无") + "），请召唤后重开 /pets",
+                        ChatFormatting.RED);
+                return;
             }
+            LevelingSession.onActivePetRead(activeGolden.id(), activeGolden.name(), activeGolden.exp(), true);
+            report(client, "已绑定：" + activeGolden.name() + "（" + shortId(activeGolden.id()) + "）",
+                    ChatFormatting.GREEN);
+            remindExpShare(client);
             return;
         }
 
-        String result = LevelingSession.onActivePetRead(
-                target.id(), target.name(), target.exp(), true);
+        // 2) 未开始会话
+        if (!LevelingSession.bound()) {
+            report(client, "未开始会话：/gdrag session start", ChatFormatting.YELLOW);
+            return;
+        }
+
+        // 3) 已绑定：按 UUID 找同一只（与是否出战无关）
+        String boundId = LevelingSession.boundPetId();
+        Pet match = null;
+        for (Pet pet : pets) {
+            if (!boundId.isEmpty() && boundId.equals(pet.id())) {
+                match = pet;
+                break;
+            }
+        }
+
+        if (match == null) {
+            report(client, "本页未找到绑定宠物 " + shortId(boundId) + "，请翻到下一页再看",
+                    ChatFormatting.YELLOW);
+            return;
+        }
+
+        String result = LevelingSession.readBoundPet(match.exp());
+        if ("pseudo".equals(result)) {
+            report(client, "地牢内：真实 " + PetXpCurve.levelLabel(match.exp()) + "（仅显示 15 秒）",
+                    ChatFormatting.AQUA);
+        } else {
+            report(client, "校准：" + LevelingSession.lastCalibrationNote(), ChatFormatting.GREEN);
+        }
+        remindExpShare(client);
+    }
+
+    /** 每次读菜单都给一次结果（同一条消息 5 秒内不重复）。 */
+    private static void report(Minecraft client, String message, ChatFormatting color) {
         if (client.player == null) {
             return;
         }
-        switch (result) {
-            case "bound" -> {
-                client.player.sendSystemMessage(ChatReport.info(
-                        "会话已开始，已绑定：" + target.name(), ChatFormatting.GREEN));
-                client.player.sendSystemMessage(ChatReport.info(
-                        "之后请保持这只宠物出战；切换别的宠物会暂停统计", ChatFormatting.GRAY));
-            }
-            case "bound-weak" -> {
-                client.player.sendSystemMessage(ChatReport.info(
-                        "已绑定：" + target.name() + "（未识别到 active 标记，仅按名字校验）",
-                        ChatFormatting.YELLOW));
-            }
-            case "pseudo" -> {
-                // 地牢内读到真实值：只在 HUD 展示 15 秒，不校准、不打断估算。
-            }
-            case "mismatch" -> {
-                long now = System.currentTimeMillis();
-                if (now - lastMismatchAt > 10_000L) {
-                    lastMismatchAt = now;
-                    client.player.sendSystemMessage(ChatReport.info(
-                            "当前宠物与绑定的 " + LevelingSession.boundPetName() + " 不一致，已暂停统计",
-                            ChatFormatting.RED));
-                }
-            }
-            default -> {
-                // calibrated / ignored：静默
-            }
+        long now = System.currentTimeMillis();
+        if (message.equals(lastReport) && now - lastReportAt < 5_000L) {
+            return;
         }
-
-        remindExpShare(client);
+        lastReportAt = now;
+        lastReport = message;
+        client.player.sendSystemMessage(ChatReport.info(message, color));
     }
 
     /** 打开 /pets 但没顺手打开 Exp Sharing 时提醒一次（HUD 分享槽不会更新）。 */
@@ -151,13 +163,11 @@ public final class PetMenuReader {
                 "Exp Share 未更新：请同时打开 /pets ➜ Exp Sharing", ChatFormatting.YELLOW));
     }
 
-    private static void warnBind(Minecraft client, String message) {
-        long now = System.currentTimeMillis();
-        if (now - lastBindWarnAt < 10_000L || client.player == null) {
-            return;
+    private static String shortId(String id) {
+        if (id == null || id.isEmpty()) {
+            return "?";
         }
-        lastBindWarnAt = now;
-        client.player.sendSystemMessage(ChatReport.info(message, ChatFormatting.RED));
+        return id.substring(0, Math.min(8, id.length())) + "…";
     }
 
     private static boolean isActive(JsonObject info) {
@@ -169,23 +179,6 @@ public final class PetMenuReader {
         } catch (RuntimeException e) {
             return false;
         }
-    }
-
-    /** petInfo 的稳定身份：优先 uniqueId，其次 uuid。 */
-    private static String petId(JsonObject info) {
-        for (String key : new String[]{"uniqueId", "uuid"}) {
-            if (info.has(key)) {
-                try {
-                    String value = info.get(key).getAsString();
-                    if (!value.isEmpty()) {
-                        return value;
-                    }
-                } catch (RuntimeException ignored) {
-                    // 继续尝试下一个字段
-                }
-            }
-        }
-        return "";
     }
 
     private record Pet(String id, String name, long exp) {

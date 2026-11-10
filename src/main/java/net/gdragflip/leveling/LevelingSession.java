@@ -78,9 +78,10 @@ public final class LevelingSession {
     private static final long MIN_CALIBRATION_XP = 50_000L;
     private static final long MIN_CALIBRATION_MILLIS = 60_000L;
     private static final int MIN_CALIBRATION_EVENTS = 10;
-    /** 合理系数区间：低于 0.8 或高于 2.5 视为 action bar 丢消息严重，不采用。 */
-    private static final double FACTOR_MIN = 0.8;
-    private static final double FACTOR_MAX = 2.5;
+    /** 只做数值健全性检查（正数、有限），不限制取值范围。 */
+    private static boolean isUsableFactor(double value) {
+        return value > 0.0 && Double.isFinite(value);
+    }
     private static Path file;
 
     private LevelingSession() {
@@ -120,11 +121,8 @@ public final class LevelingSession {
                         ? coreName(boundPetName)
                         : stored.boundPetCore;
                 boundConfident = stored.boundConfident;
-                if (stored.estimateFactor > 0.0) {
-                    // 存档里的系数若落在合理区间外，说明之前学歪了，直接重置为 1.0。
-                    estimateFactor = (stored.estimateFactor >= FACTOR_MIN && stored.estimateFactor <= FACTOR_MAX)
-                            ? stored.estimateFactor
-                            : 1.0;
+                if (isUsableFactor(stored.estimateFactor)) {
+                    estimateFactor = stored.estimateFactor;
                 }
                 if (stored.startedAt > 0) {
                     startedAt = stored.startedAt;
@@ -173,6 +171,31 @@ public final class LevelingSession {
     /** 最近一次从 /pets 读到的真实经验（用于 HUD 显示等级），未知为 -1。 */
     public static synchronized long lastKnownExp() {
         return lastKnownExp;
+    }
+
+    /** 距离上次成功校准过了多久（毫秒）；从未校准返回 -1。 */
+    public static synchronized long millisSinceCalibration() {
+        return lastRealAt <= 0 ? -1L : System.currentTimeMillis() - lastRealAt;
+    }
+
+    /**
+     * 按 UUID 匹配到绑定宠物后的读取入口：地牢内只展示伪真实值，地牢外才校准。
+     *
+     * @return {@code calibrated} / {@code pseudo}
+     */
+    public static synchronized String readBoundPet(long exp) {
+        if (exp <= 0) {
+            return "ignored";
+        }
+        lastKnownExp = exp;
+        mismatch = false;
+        if (inDungeon()) {
+            setPseudoReal(exp);
+            lastCalibrationNote = "地牢内仅显示真实值（不校准）";
+            return "pseudo";
+        }
+        onRealExpRead(exp, boundPetId);
+        return "calibrated";
     }
 
     /** 仅由命令 / 设置界面调用。 */
@@ -389,6 +412,7 @@ public final class LevelingSession {
             preciseSinceAnchor = 0L;
             estimateEvents = 0;
             lastRealExp = exp;
+            lastRealAt = System.currentTimeMillis();
             totalAtLastReal = 0L;
             lastRealPetId = id;
             mismatch = false;
@@ -523,17 +547,15 @@ public final class LevelingSession {
 
                 if (enoughSample && estimatePortion > 0) {
                     double ideal = estimatePortion / (double) rawSinceAnchor;
-                    if (ideal >= FACTOR_MIN && ideal <= FACTOR_MAX) {
-                        estimateFactor = clampFactor(ideal);
+                    if (isUsableFactor(ideal)) {
+                        estimateFactor = ideal;
                         lastCalibrationNote = "系数 %.3f（真实 +%d − 精确 %d = 估算 %d ÷ 未修正 %d）".formatted(
                                 estimateFactor, realDelta, preciseSinceAnchor, estimatePortion, rawSinceAnchor);
                         GdragFlipMod.LOGGER.info("校准收敛：{}", lastCalibrationNote);
                     } else {
-                        lastCalibrationNote = "样本弃用：估算 %.2f/XP 超出 %.1f~%.1f".formatted(
-                                ideal, FACTOR_MIN, FACTOR_MAX);
-                        GdragFlipMod.LOGGER.info("校准样本弃用：估算贡献 {} ÷ 未修正 {} = {}，超出 {}~{}",
-                                estimatePortion, rawSinceAnchor, String.format("%.2f", ideal),
-                                FACTOR_MIN, FACTOR_MAX);
+                        lastCalibrationNote = "样本无效：估算贡献 %d ÷ 未修正 %d 不成立".formatted(
+                                estimatePortion, rawSinceAnchor);
+                        GdragFlipMod.LOGGER.info("校准{}", lastCalibrationNote);
                     }
                 } else {
                     lastCalibrationNote = "只对齐总量（%s）：真实 +%d，估算 +%d".formatted(
@@ -579,9 +601,7 @@ public final class LevelingSession {
         return lastCalibrationNote;
     }
 
-    private static double clampFactor(double value) {
-        return Math.max(FACTOR_MIN, Math.min(FACTOR_MAX, value));
-    }
+
 
     public static synchronized long totalXp() {
         return totalXp;

@@ -88,7 +88,12 @@ public final class LevelingHud implements HudElement {
         } else if (inDungeon && !estimating) {
             lines.add(Component.literal("◷ waiting for combat xp…").withStyle(ChatFormatting.GRAY));
         } else if (!inDungeon) {
-            lines.add(Component.literal("▸ idle · open /pets to sync").withStyle(ChatFormatting.YELLOW));
+            long since = LevelingSession.millisSinceCalibration();
+            boolean fresh = since >= 0 && since < 600_000L;
+            lines.add(Component.literal(fresh
+                    ? "▸ synced " + duration(since) + " ago"
+                    : "▸ open /pets to sync")
+                    .withStyle(fresh ? ChatFormatting.GRAY : ChatFormatting.YELLOW));
         }
 
         // 速率分母：地牢内计时优先；没有地牢记录时用装备活跃时长。
