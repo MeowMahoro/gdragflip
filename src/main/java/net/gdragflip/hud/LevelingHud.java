@@ -69,16 +69,15 @@ public final class LevelingHud implements HudElement {
 
     public static List<Component> buildLines(GdragConfig config) {
         List<Component> lines = new ArrayList<>();
-        PetWidgetReader.Snapshot snapshot = LevelingAssistant.snapshot();
         long sessionXp = LevelingSession.totalXp();
         double pricePerExp = pricePerExp();
+        long knownExp = LevelingSession.lastKnownExp();
 
         lines.add(Component.literal("✦ Gdrag Flip").withStyle(ChatFormatting.GOLD));
 
-        boolean accurateNow = snapshot.found() && snapshot.goldenDragon();
-        // 120 秒窗口：两次击杀之间短暂空闲仍显示「估算」，避免状态闪烁；
-        // 精确数据可用时立即不计为估算。
-        boolean estimating = !accurateNow && LevelingSession.estimatedWithin(120_000L);
+        // 120 秒窗口：两次击杀之间短暂空闲仍显示「估算」，避免状态闪烁。
+        boolean estimating = LevelingSession.estimatedWithin(120_000L);
+        boolean inDungeon = LevelingSession.inDungeon();
 
         if (!LevelingSession.bound()) {
             lines.add(Component.literal("no session · /gdrag session start").withStyle(ChatFormatting.GRAY));
@@ -86,10 +85,10 @@ public final class LevelingHud implements HudElement {
             String current = LevelingSession.currentPetName();
             lines.add(Component.literal("⚠ pet mismatch: " + (current.isEmpty() ? "?" : current) + " (paused)")
                     .withStyle(ChatFormatting.RED));
-        } else if (!accurateNow && !estimating && snapshot.found()) {
-            lines.add(Component.literal("⚠ equip Golden Dragon").withStyle(ChatFormatting.RED));
-        } else if (!accurateNow && !estimating) {
-            lines.add(Component.literal("waiting… (/tab pet widget)").withStyle(ChatFormatting.GRAY));
+        } else if (inDungeon && !estimating) {
+            lines.add(Component.literal("◷ waiting for combat xp…").withStyle(ChatFormatting.GRAY));
+        } else if (!inDungeon) {
+            lines.add(Component.literal("▸ idle · open /pets to sync").withStyle(ChatFormatting.YELLOW));
         }
 
         // 速率分母：地牢内计时优先；没有地牢记录时用装备活跃时长。
@@ -130,8 +129,8 @@ public final class LevelingHud implements HudElement {
 
         // ▸ Main
         MutableComponent mainHeader = Component.literal("▸ Main").withStyle(ChatFormatting.GREEN);
-        if (accurateNow) {
-            mainHeader.append(Component.literal("  " + PetXpCurve.levelLabel(snapshot.totalExp()))
+        if (knownExp > 0) {
+            mainHeader.append(Component.literal("  " + PetXpCurve.levelLabel(knownExp))
                     .withStyle(ChatFormatting.WHITE));
         }
         lines.add(mainHeader);

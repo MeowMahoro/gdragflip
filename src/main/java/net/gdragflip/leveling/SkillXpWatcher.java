@@ -63,8 +63,8 @@ public final class SkillXpWatcher {
         if (!LevelingSession.bound() || LevelingSession.mismatch()) {
             return;
         }
-        // Pet Widget 正常时用真实数据，不叠加估算。
-        if (LevelingSession.widgetDetected()) {
+        // 只在地牢内估算；地牢外等 /pets 的真实值。
+        if (!LevelingSession.inDungeon()) {
             return;
         }
         Matcher matcher = ACTION_BAR_PATTERN.matcher(text);

@@ -344,10 +344,9 @@ public final class GdragCommand {
                 LevelingSession.currentPetKnown() ? LevelingSession.currentPetName() : "未知（尚未收到召唤消息）"),
                 ChatFormatting.GRAY));
 
-        if (!LevelingSession.widgetDetected()
-                && !LevelingSession.estimatedWithin(120_000L)
-                && LevelingSession.dungeonMillis() == 0L) {
-            source.sendFeedback(ChatReport.info("未检测到宠物 Widget：请在 /tab 开启 Pet Widget", ChatFormatting.RED));
+        if (LevelingSession.bound() && !LevelingSession.inDungeon()
+                && !LevelingSession.estimatedWithin(120_000L)) {
+            source.sendFeedback(ChatReport.info("当前不在估算状态：打开 /pets 可校准并刷新真实值", ChatFormatting.YELLOW));
         }
 
         if (!ExpShareTracker.pets().isEmpty()) {
@@ -383,7 +382,6 @@ public final class GdragCommand {
 
     private static int debugState(CommandContext<FabricClientCommandSource> context) {
         FabricClientCommandSource source = context.getSource();
-        PetWidgetReader.Snapshot snapshot = LevelingAssistant.snapshot();
         String bound = LevelingSession.bound()
                 ? LevelingSession.boundPetName() + (LevelingSession.boundConfident() ? "（精确绑定）" : "（名字绑定）")
                 : "未绑定";
@@ -409,10 +407,12 @@ public final class GdragCommand {
             source.sendFeedback(ChatReport.info("LastCal: " + calNote, ChatFormatting.DARK_GRAY));
         }
 
-        source.sendFeedback(ChatReport.info("Widget：found=%s pet='%s' level=%d exp=%s ｜ Widget 检测=%s".formatted(
-                snapshot.found(), snapshot.petName(), snapshot.level(),
-                ChatReport.coins(snapshot.totalExp()),
-                LevelingSession.widgetDetected() ? "是" : "否"), ChatFormatting.GRAY));
+        long knownExp = LevelingSession.lastKnownExp();
+        source.sendFeedback(ChatReport.info("LastReal: %s".formatted(
+                knownExp > 0
+                        ? net.gdragflip.analysis.PetXpCurve.levelLabel(knownExp) + " (exp " + knownExp + ")"
+                        : "尚未从 /pets 读到"),
+                ChatFormatting.GRAY));
 
         source.sendFeedback(ChatReport.info("Dungeon: %s%s".formatted(
                 net.gdragflip.leveling.DungeonDetector.inDungeon() ? "yes" : "no",

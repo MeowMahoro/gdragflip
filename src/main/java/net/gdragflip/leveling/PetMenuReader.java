@@ -10,6 +10,9 @@ import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.item.ItemStack;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * 打开 {@code /pets} 菜单时读取「当前出战」金龙的 UUID 与真实经验。
  *
@@ -43,10 +46,9 @@ public final class PetMenuReader {
         cooldown = 20;
 
         AbstractContainerMenu menu = screen.getMenu();
+        List<Pet> goldens = new ArrayList<>();
         Pet activeGolden = null;
         Pet activeOther = null;
-        Pet goldenFallback = null;
-
         for (int slot = 0; slot < menu.slots.size(); slot++) {
             ItemStack stack = menu.getSlot(slot).getItem();
             if (stack.isEmpty()) {
@@ -69,6 +71,9 @@ public final class PetMenuReader {
                         slot, pet.name(), PetNbt.type(info), active, pet.id(), exp);
             }
 
+            if (golden) {
+                goldens.add(pet);
+            }
             if (active) {
                 if (golden) {
                     if (activeGolden == null) {
@@ -77,26 +82,22 @@ public final class PetMenuReader {
                 } else if (activeOther == null) {
                     activeOther = pet;
                 }
-            } else if (golden && goldenFallback == null) {
-                goldenFallback = pet;
             }
         }
 
-        // 绑定时必须确保出战的是金龙，否则会绑到列表里的其它金龙身上。
-        if (LevelingSession.pendingBind() && activeGolden == null) {
-            if (activeOther != null) {
-                warnBind(client, "当前出战的不是金龙（" + activeOther.name() + "），请先召唤要升级的金龙再打开 /pets");
-            }
-            return;
-        }
-
-        Pet target = activeGolden != null ? activeGolden : goldenFallback;
+        // 只认菜单里的 petInfo.active 标记；没有标记就不猜（宁可提示也不要绑错）。
+        Pet target = activeGolden;
         if (target == null) {
+            if (LevelingSession.bound() || LevelingSession.pendingBind()) {
+                warnBind(client, "当前出战的是 "
+                        + (activeOther != null ? activeOther.name() : "非金龙宠物")
+                        + "（或菜单未标记 active），请召唤要升级的金龙后再打开 /pets");
+            }
             return;
         }
 
         String result = LevelingSession.onActivePetRead(
-                target.id(), target.name(), target.exp(), activeGolden != null);
+                target.id(), target.name(), target.exp(), true);
         if (client.player == null) {
             return;
         }

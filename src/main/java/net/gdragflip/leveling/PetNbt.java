@@ -119,6 +119,26 @@ public final class PetNbt {
         return text.replaceAll("\\[Lvl [\\d,]+]\\s*", "").replace("\u2726", "").trim();
     }
 
+    /** 宠物 UUID：优先 uniqueId，其次 uuid；都没有返回空串。 */
+    public static String id(JsonObject info) {
+        if (info == null) {
+            return "";
+        }
+        for (String key : new String[]{"uniqueId", "uuid"}) {
+            if (info.has(key)) {
+                try {
+                    String value = info.get(key).getAsString();
+                    if (!value.isEmpty()) {
+                        return value;
+                    }
+                } catch (RuntimeException ignored) {
+                    // 继续尝试下一个字段
+                }
+            }
+        }
+        return "";
+    }
+
     public static String type(JsonObject info) {
         if (info == null || !info.has("type")) {
             return "";

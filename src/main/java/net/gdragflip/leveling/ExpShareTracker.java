@@ -46,7 +46,7 @@ public final class ExpShareTracker {
      * @param type        宠物内部类型（如 GOLDEN_DRAGON），未知为空串
      * @param ratePercent 该槽位的分享比例（%），未知为 -1
      */
-    public record SharePet(String name, int level, long exp, String type, double ratePercent) {
+    public record SharePet(String id, String name, int level, long exp, String type, double ratePercent) {
     }
 
     public static List<SharePet> pets() {
@@ -127,7 +127,7 @@ public final class ExpShareTracker {
             String type = info == null ? "" : PetNbt.type(info);
             int level = PetNbt.level(petStack, info);
 
-            read.add(new SharePet(PetNbt.name(petStack), level, exp, type, rate));
+            read.add(new SharePet(PetNbt.id(info), PetNbt.name(petStack), level, exp, type, rate));
         }
 
         boolean changed = enabled != observedSlots || !read.equals(pets);
