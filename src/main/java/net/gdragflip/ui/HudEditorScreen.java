@@ -81,8 +81,8 @@ public final class HudEditorScreen extends Screen {
     /** 方向键微调（拖动失效时的后备手段）。 */
     @Override
     public boolean keyPressed(net.minecraft.client.input.KeyEvent event) {
-        int step = com.mojang.blaze3d.platform.InputConstants.isKeyDown(
-                com.mojang.blaze3d.platform.InputConstants.KEY_LSHIFT) ? 10 : 1;
+        // GLFW_MOD_SHIFT = 0x1；用事件自带修饰键，跨版本通用（26.2/26.3 的 InputConstants 签名不同）。
+        int step = (event.modifiers() & 0x1) != 0 ? 10 : 1;
         GdragConfig config = GdragConfig.get();
         switch (event.key()) {
             case com.mojang.blaze3d.platform.InputConstants.KEY_LEFT -> config.hudX = Math.max(0, config.hudX - step);
