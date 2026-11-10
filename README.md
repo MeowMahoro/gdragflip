@@ -1,8 +1,8 @@
 # Golden Dragon Flip
 
-Hypixel SkyBlock 客户端 Fabric mod：分析拍卖行里 **100 级以上的 Golden Dragon**，
-用**累计经验**（等级 + 溢出进度）作为定价坐标，找出被低估、适合买下养到 200 级再卖的挂单。
-
+Hypixel SkyBlock 客户端 Fabric mod
+用于：
+在AH上找到合适的100级以上的金龙pet，并提供地牢刷经验助手
 数据源：`sky.coflnet.com`（Cofl SkyApi，免 Key）。
 
 ## 命令
