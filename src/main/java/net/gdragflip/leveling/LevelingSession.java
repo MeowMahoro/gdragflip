@@ -4,7 +4,6 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import net.fabricmc.loader.api.FabricLoader;
 import net.gdragflip.GdragFlipMod;
-import net.gdragflip.analysis.PetXpCurve;
 
 import java.io.Reader;
 import java.io.Writer;
@@ -33,10 +32,8 @@ public final class LevelingSession {
     private static long totalXp;
     /** 真正装备金龙、且在采样中的累计时长，用于计算 XP/h（避免把离线时间算进去）。 */
     private static long activeMillis;
-    private static long lastSampleAt = -1L;
     private static long lastTotalExp = -1L;
-    private static boolean goldenDragonEquipped;
-    private static boolean widgetDetected;
+    private static long lastKnownExp = -1L;
     private static boolean dirty;
     private static long lastEstimateAt;
     /** 地牢内累计时长（进本开始计时，离开/长时间无经验暂停）。 */
@@ -64,11 +61,27 @@ public final class LevelingSession {
     private static boolean mismatch;
     /** 估算值的修正系数（真实增量 / 未修正的估算增量）。 */
     private static double estimateFactor = 1.0;
+    /** 地牢内打开 /pets 读到的「伪真实值」：只展示 15 秒，不参与校准。 */
+    private static long pseudoExp = -1L;
+    private static long pseudoAt;
+    /** 最近一次校准的结果说明（调试用）。 */
+    private static String lastCalibrationNote = "";
+    private static final long PSEUDO_VISIBLE_MILLIS = 15_000L;
     /** 自上次校准点以来「未乘系数」的估算经验，用于一次解出系数。 */
     private static long rawSinceAnchor;
-    /** 校准最少需要的样本量（经验）与时间间隔，样本太小时不更新系数。 */
+    /** 自上次校准点以来通过精确数据（Pet Widget）累加的经验。 */
+    private static long preciseSinceAnchor;
+    /** 自上次校准点以来的估算事件次数。 */
+    private static int estimateEvents;
+
+    /** 校准门槛：段内必须「全部是估算」且样本足够，否则只对齐总量、不改系数。 */
     private static final long MIN_CALIBRATION_XP = 50_000L;
     private static final long MIN_CALIBRATION_MILLIS = 60_000L;
+    private static final int MIN_CALIBRATION_EVENTS = 10;
+    /** 只做数值健全性检查（正数、有限），不限制取值范围。 */
+    private static boolean isUsableFactor(double value) {
+        return value > 0.0 && Double.isFinite(value);
+    }
     private static Path file;
 
     private LevelingSession() {
@@ -108,8 +121,8 @@ public final class LevelingSession {
                         ? coreName(boundPetName)
                         : stored.boundPetCore;
                 boundConfident = stored.boundConfident;
-                if (stored.estimateFactor > 0.0) {
-                    estimateFactor = clampFactor(stored.estimateFactor);
+                if (isUsableFactor(stored.estimateFactor)) {
+                    estimateFactor = stored.estimateFactor;
                 }
                 if (stored.startedAt > 0) {
                     startedAt = stored.startedAt;
@@ -155,66 +168,34 @@ public final class LevelingSession {
         }
     }
 
-    public static synchronized void sample(PetWidgetReader.Snapshot snapshot) {
-        widgetDetected = snapshot.found();
-        if (snapshot.found()) {
-            // 精确数据可用：立刻撤销「估算」标记，不必等 120 秒窗口过期。
-            lastEstimateAt = 0L;
-            // 必须先观测再判 mismatch，否则 mismatch 一旦置位就没有恢复路径。
-            onPetObserved(snapshot.petName());
-        }
+    /** 最近一次从 /pets 读到的真实经验（用于 HUD 显示等级），未知为 -1。 */
+    public static synchronized long lastKnownExp() {
+        return lastKnownExp;
+    }
 
-        // 未开始会话（没绑定宠物）时不统计。
-        if (boundPetId.isEmpty()) {
-            goldenDragonEquipped = false;
-            lastTotalExp = -1L;
-            return;
-        }
-        // 当前宠物与绑定不符：暂停累计，等换回来再重新对基准。
-        if (mismatch) {
-            goldenDragonEquipped = false;
-            lastTotalExp = -1L;
-            return;
-        }
+    /** 距离上次成功校准过了多久（毫秒）；从未校准返回 -1。 */
+    public static synchronized long millisSinceCalibration() {
+        return lastRealAt <= 0 ? -1L : System.currentTimeMillis() - lastRealAt;
+    }
 
-        if (!snapshot.found() || !snapshot.goldenDragon()) {
-            goldenDragonEquipped = false;
-            lastTotalExp = -1L;
-            return;
+    /**
+     * 按 UUID 匹配到绑定宠物后的读取入口：地牢内只展示伪真实值，地牢外才校准。
+     *
+     * @return {@code calibrated} / {@code pseudo}
+     */
+    public static synchronized String readBoundPet(long exp) {
+        if (exp <= 0) {
+            return "ignored";
         }
-
-        goldenDragonEquipped = true;
-
-        if (pendingRebaseline) {
-            // 刚换过宠物：只重设基准，不计增量。
-            pendingRebaseline = false;
-            lastTotalExp = snapshot.totalExp();
-            lastSampleAt = System.currentTimeMillis();
-            return;
+        lastKnownExp = exp;
+        mismatch = false;
+        if (inDungeon()) {
+            setPseudoReal(exp);
+            lastCalibrationNote = "地牢内仅显示真实值（不校准）";
+            return "pseudo";
         }
-
-        long now = System.currentTimeMillis();
-        if (lastSampleAt > 0) {
-            long gap = now - lastSampleAt;
-            if (gap > 0 && gap <= MAX_SAMPLE_GAP_MILLIS) {
-                activeMillis += gap;
-                dirty = true;
-            }
-        }
-        lastSampleAt = now;
-
-        long total = snapshot.totalExp();
-        if (lastTotalExp < 0) {
-            lastTotalExp = total;
-            return;
-        }
-
-        long delta = total - lastTotalExp;
-        if (delta > 0 && delta <= MAX_DELTA) {
-            totalXp += delta;
-            dirty = true;
-        }
-        lastTotalExp = total;
+        onRealExpRead(exp, boundPetId);
+        return "calibrated";
     }
 
     /** 仅由命令 / 设置界面调用。 */
@@ -237,12 +218,16 @@ public final class LevelingSession {
         dungeonMillis = 0L;
         startedAt = System.currentTimeMillis();
         lastTotalExp = -1L;
-        lastSampleAt = -1L;
         lastEstimateAt = 0L;
         lastRealExp = -1L;
         lastRealAt = 0L;
         totalAtLastReal = 0L;
         rawSinceAnchor = 0L;
+        preciseSinceAnchor = 0L;
+        estimateEvents = 0;
+        pseudoExp = -1L;
+        pseudoAt = 0L;
+        lastKnownExp = -1L;
         lastRealPetId = "";
         pendingRebaseline = false;
         estimateFactor = 1.0;
@@ -252,9 +237,6 @@ public final class LevelingSession {
     /** 离开世界时清掉基准（避免用旧经验算差值），累计值保留。 */
     public static synchronized void onWorldLeave() {
         lastTotalExp = -1L;
-        lastSampleAt = -1L;
-        goldenDragonEquipped = false;
-        widgetDetected = false;
         saveIfDirty();
     }
 
@@ -275,6 +257,7 @@ public final class LevelingSession {
         }
         lastEstimateAt = now;
         rawSinceAnchor += xp;
+        estimateEvents++;
         totalXp += Math.max(1L, Math.round(xp * estimateFactor));
         dirty = true;
     }
@@ -425,7 +408,11 @@ public final class LevelingSession {
             boundPetCore = coreName(name);
             boundConfident = confident && !id.isEmpty();
             startedAt = System.currentTimeMillis();
+            rawSinceAnchor = 0L;
+            preciseSinceAnchor = 0L;
+            estimateEvents = 0;
             lastRealExp = exp;
+            lastRealAt = System.currentTimeMillis();
             totalAtLastReal = 0L;
             lastRealPetId = id;
             mismatch = false;
@@ -437,14 +424,14 @@ public final class LevelingSession {
         if (boundPetId.isEmpty()) {
             return "ignored";
         }
-        // UUID 变化但名字一致：只当作「同一只宠物的身份刷新」，重新锚定校准，不暂停统计。
+        // 绑定的宠物是 active 那只，所以 UUID 不一致就是「换了一只金龙」，不能拿它来校准。
         if (boundConfident && !id.isEmpty() && !id.equals(boundPetId)) {
-            GdragFlipMod.LOGGER.info("[petmenu] UUID 变化（{} -> {}），重新锚定校准", boundPetId, id);
-            boundPetId = id;
-            lastRealPetId = id;
-            lastRealExp = exp;
-            totalAtLastReal = totalXp;
+            mismatch = true;
+            lastTotalExp = -1L;
             dirty = true;
+            GdragFlipMod.LOGGER.info("[petmenu] UUID 不符（绑定 {} vs 当前 {}），判定为另一只宠物",
+                    boundPetId, id);
+            return "mismatch";
         }
 
         // 名字不一致才算真的换宠（核心名比较，忽略 ⭐/✦ 等符号）。
@@ -457,8 +444,48 @@ public final class LevelingSession {
         }
 
         mismatch = false;
+
+        // 地牢内读到的真实值只作为「伪真实值」展示 15 秒：
+        // 这段路线上还有未捕获的加成，直接用来校准会把系数带歪。
+        lastKnownExp = exp;
+        if (inDungeon()) {
+            setPseudoReal(exp);
+            return "pseudo";
+        }
+
         onRealExpRead(exp, id);
         return "calibrated";
+    }
+
+    /**
+     * 是否处于「地牢内」：Tab 上没有宠物 Widget，且最近 120 秒有 action bar 经验。
+     * 地牢外的 Widget 正常显示，所以不会误判。
+     */
+    public static synchronized boolean inDungeon() {
+        // 以侧边栏计分板为准（与 NoammAddons 一致），不再用 Widget 是否消失来猜。
+        return DungeonDetector.inDungeon();
+    }
+
+    /** 清掉伪真实值（重置会话时）。 */
+    public static synchronized void clearPseudoReal() {
+        pseudoExp = -1L;
+        pseudoAt = 0L;
+    }
+
+    public static synchronized void setPseudoReal(long exp) {
+        if (exp > 0) {
+            pseudoExp = exp;
+            pseudoAt = System.currentTimeMillis();
+        }
+    }
+
+    /** 地牢内读到的真实值是否还在 15 秒展示窗口内。 */
+    public static synchronized boolean pseudoVisible() {
+        return pseudoExp > 0 && System.currentTimeMillis() - pseudoAt <= PSEUDO_VISIBLE_MILLIS;
+    }
+
+    public static synchronized long pseudoExp() {
+        return pseudoExp;
     }
 
     /** 地牢内计时：只在「无 Pet Widget 且仍在持续获得经验」时累加。 */
@@ -511,25 +538,39 @@ public final class LevelingSession {
                 totalXp = totalAtLastReal + realDelta;
                 dirty = true;
 
-                // 直接解出系数：真实增量 / 未修正的估算增量（一次即可收敛）。
+                // 学系数：把段内的精确增量减掉，剩下的才是估算贡献。
+                // （只要求「段内有估算」而不要求「纯估算」，否则出本后必开 /pets 就永远学不到）
+                long estimatePortion = realDelta - preciseSinceAnchor;
                 boolean enoughSample = rawSinceAnchor >= MIN_CALIBRATION_XP
-                        && sinceLastRead >= MIN_CALIBRATION_MILLIS;
-                if (enoughSample) {
-                    double ideal = realDelta / (double) rawSinceAnchor;
-                    if (ideal > 0.2 && ideal < 5.0) {
-                        estimateFactor = clampFactor(ideal);
-                        GdragFlipMod.LOGGER.info("校准收敛：真实 +{}，未修正估算 +{} → 系数 {}",
-                                realDelta, rawSinceAnchor, String.format("%.3f", estimateFactor));
+                        && sinceLastRead >= MIN_CALIBRATION_MILLIS
+                        && estimateEvents >= MIN_CALIBRATION_EVENTS;
+
+                if (enoughSample && estimatePortion > 0) {
+                    double ideal = estimatePortion / (double) rawSinceAnchor;
+                    if (isUsableFactor(ideal)) {
+                        estimateFactor = ideal;
+                        lastCalibrationNote = "系数 %.3f（真实 +%d − 精确 %d = 估算 %d ÷ 未修正 %d）".formatted(
+                                estimateFactor, realDelta, preciseSinceAnchor, estimatePortion, rawSinceAnchor);
+                        GdragFlipMod.LOGGER.info("校准收敛：{}", lastCalibrationNote);
+                    } else {
+                        lastCalibrationNote = "样本无效：估算贡献 %d ÷ 未修正 %d 不成立".formatted(
+                                estimatePortion, rawSinceAnchor);
+                        GdragFlipMod.LOGGER.info("校准{}", lastCalibrationNote);
                     }
                 } else {
-                    GdragFlipMod.LOGGER.info("经验已校准（样本不足，暂不更新系数）：真实 +{}，估算 +{}",
-                            realDelta, estimateDelta);
+                    lastCalibrationNote = "只对齐总量（%s）：真实 +%d，估算 +%d".formatted(
+                            enoughSample ? "估算贡献非正" : "样本不足", realDelta, estimateDelta);
+                    GdragFlipMod.LOGGER.info("校准{}", lastCalibrationNote);
                 }
                 rawSinceAnchor = 0L;
+                preciseSinceAnchor = 0L;
+                estimateEvents = 0;
             } else if (realDelta == 0 && estimateDelta > 0 && sinceLastRead >= 60_000L) {
                 // 一分钟以上真实经验没动但估算涨了：说明估算在空转，抹掉这段虚增。
                 totalXp = totalAtLastReal;
                 rawSinceAnchor = 0L;
+                preciseSinceAnchor = 0L;
+                estimateEvents = 0;
                 dirty = true;
                 GdragFlipMod.LOGGER.info("经验校准：真实未增长，撤销估算 +{}", estimateDelta);
             }
@@ -540,38 +581,27 @@ public final class LevelingSession {
         totalAtLastReal = totalXp;
     }
 
-    /**
-     * 用「升级消息」作为免费锚点：{@code Your Golden Dragon leveled up to level N!}
-     * 表示此刻累计经验 ≈ 该等级起点经验，不需要打开菜单也能校准。
-     */
-    public static synchronized void onLevelUpAnchor(int level) {
-        if (level <= 1) {
-            return;
-        }
-        long exp = PetXpCurve.expAtLevel(level);
-        if (exp > 0) {
-            onRealExpRead(exp, lastRealPetId);
-        }
-    }
-
     /** 自上次校准点以来未修正的估算经验（调试用）。 */
     public static synchronized long rawSinceAnchor() {
         return rawSinceAnchor;
     }
 
-    /** 名字是否与绑定的宠物一致（用于升级消息锚点）。 */
-    public static synchronized boolean matchesBound(String name) {
-        if (boundPetId.isEmpty()) {
-            return false;
-        }
-        String boundCore = boundPetCore.isEmpty() ? coreName(boundPetName) : boundPetCore;
-        String observed = coreName(name);
-        return !boundCore.isEmpty() && !observed.isEmpty() && namesMatch(observed, boundCore);
+    /** 自上次校准点以来通过精确数据累加的经验（调试用）。 */
+    public static synchronized long preciseSinceAnchor() {
+        return preciseSinceAnchor;
     }
 
-    private static double clampFactor(double value) {
-        return Math.max(0.2, Math.min(5.0, value));
+    /** 自上次校准点以来的估算事件次数（调试用）。 */
+    public static synchronized int estimateEvents() {
+        return estimateEvents;
     }
+
+    /** 最近一次校准的结果说明（调试用）。 */
+    public static synchronized String lastCalibrationNote() {
+        return lastCalibrationNote;
+    }
+
+
 
     public static synchronized long totalXp() {
         return totalXp;
@@ -590,12 +620,9 @@ public final class LevelingSession {
         return activeMillis;
     }
 
+    /** 是否处于「已绑定且宠物匹配」的可统计状态。 */
     public static synchronized boolean goldenDragonEquipped() {
-        return goldenDragonEquipped;
-    }
-
-    public static synchronized boolean widgetDetected() {
-        return widgetDetected;
+        return !boundPetId.isEmpty() && !mismatch;
     }
 
     public static synchronized long startedAt() {

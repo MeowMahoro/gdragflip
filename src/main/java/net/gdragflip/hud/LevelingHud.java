@@ -15,6 +15,7 @@ import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.resources.Identifier;
 
 import java.util.ArrayList;
@@ -45,6 +46,10 @@ public final class LevelingHud implements HudElement {
     /** 在指定坐标绘制 HUD，返回占用高度。HUD 本体与位置编辑界面共用。 */
     public static int render(GuiGraphicsExtractor graphics, Minecraft client, int x, int y) {
         List<Component> lines = buildLines(GdragConfig.get());
+        if (lines.isEmpty()) {
+            return 0;
+        }
+
         int cursor = y;
         for (Component line : lines) {
             graphics.text(client.font, line, x, cursor, 0xFFFFFFFF);
@@ -53,96 +58,143 @@ public final class LevelingHud implements HudElement {
         return cursor - y;
     }
 
+    private static String formatRate(double rate) {
+        if (rate <= 0) {
+            return "";
+        }
+        return rate == Math.floor(rate)
+                ? (int) rate + "%"
+                : String.format(java.util.Locale.ROOT, "%.1f%%", rate);
+    }
+
     public static List<Component> buildLines(GdragConfig config) {
         List<Component> lines = new ArrayList<>();
-        PetWidgetReader.Snapshot snapshot = LevelingAssistant.snapshot();
         long sessionXp = LevelingSession.totalXp();
         double pricePerExp = pricePerExp();
+        long knownExp = LevelingSession.lastKnownExp();
 
-        lines.add(Component.literal("金龙升级助手").withStyle(ChatFormatting.GOLD));
+        lines.add(Component.literal("✦ Gdrag Flip").withStyle(ChatFormatting.GOLD));
 
-        boolean accurateNow = snapshot.found() && snapshot.goldenDragon();
-        // 120 秒窗口：两次击杀之间短暂空闲仍显示「估算」，避免状态闪烁；
-        // 精确数据可用时立即不计为估算。
-        boolean estimating = !accurateNow && LevelingSession.estimatedWithin(120_000L);
-
-        if (accurateNow) {
-            // 精确数据：来自 Tab 的 Pet Widget。
-            lines.add(Component.literal("精确 · " + PetXpCurve.levelLabel(snapshot.totalExp()))
-                    .withStyle(ChatFormatting.GREEN));
-        } else if (LevelingSession.mismatch()) {
-            // 不符优先于「估算」：暂停状态下不该再显示估算来源。
-            String current = LevelingSession.currentPetName();
-            lines.add(Component.literal("⚠ 当前宠物 " + (current.isEmpty() ? "未知" : current)
-                    + "，与绑定 " + LevelingSession.boundPetName() + " 不符（已暂停）")
-                    .withStyle(ChatFormatting.RED));
-        } else if (estimating) {
-            // 地牢内：来自 action bar 技能经验换算，不再提示 Widget。
-            lines.add(Component.literal("估算 · 地牢技能经验").withStyle(ChatFormatting.AQUA));
-        } else if (snapshot.found()) {
-            lines.add(Component.literal("请装备金龙宠物").withStyle(ChatFormatting.RED));
-        } else {
-            lines.add(Component.literal("等待经验数据…").withStyle(ChatFormatting.GRAY));
-            if (LevelingSession.dungeonMillis() == 0L) {
-                lines.add(Component.literal("（/tab 开启 Pet Widget 可获得精确数据）")
-                        .withStyle(ChatFormatting.DARK_GRAY));
-            }
-        }
+        // 120 秒窗口：两次击杀之间短暂空闲仍显示「估算」，避免状态闪烁。
+        boolean estimating = LevelingSession.estimatedWithin(120_000L);
+        boolean inDungeon = LevelingSession.inDungeon();
 
         if (!LevelingSession.bound()) {
-            lines.add(Component.literal("未开始会话（/gdrag session start）").withStyle(ChatFormatting.GRAY));
+            lines.add(Component.literal("no session · /gdrag session start").withStyle(ChatFormatting.GRAY));
+        } else if (LevelingSession.mismatch()) {
+            String current = LevelingSession.currentPetName();
+            lines.add(Component.literal("⚠ pet mismatch: " + (current.isEmpty() ? "?" : current) + " (paused)")
+                    .withStyle(ChatFormatting.RED));
+        } else if (inDungeon && !estimating) {
+            lines.add(Component.literal("◷ waiting for combat xp…").withStyle(ChatFormatting.GRAY));
+        } else if (!inDungeon) {
+            long since = LevelingSession.millisSinceCalibration();
+            boolean fresh = since >= 0 && since < 600_000L;
+            lines.add(Component.literal(fresh
+                    ? "▸ synced " + duration(since) + " ago"
+                    : "▸ open /pets to sync")
+                    .withStyle(fresh ? ChatFormatting.GRAY : ChatFormatting.YELLOW));
         }
-
-        lines.add(Component.literal("累计 " + signed(sessionXp) + " XP" + (estimating ? "（估算）" : ""))
-                .withStyle(ChatFormatting.WHITE));
 
         // 速率分母：地牢内计时优先；没有地牢记录时用装备活跃时长。
         boolean dungeonBased = LevelingSession.dungeonMillis() >= 60_000L;
         long baseMillis = dungeonBased ? LevelingSession.dungeonMillis() : LevelingSession.activeMillis();
         double hours = Math.max(1.0 / 3600.0, baseMillis / 3_600_000.0);
-        long xpPerHour = Math.round(sessionXp / hours);
-        String timeLabel = (dungeonBased ? "地牢 " : "累计 ") + duration(baseMillis);
-
-        // 时长不足 1 分钟时速率会被放大，先不显示具体数字。
         boolean rateReady = baseMillis >= 60_000L;
 
-        if (pricePerExp > 0) {
-            long coins = Math.round(sessionXp * pricePerExp);
-            lines.add(Component.literal("≈ " + signed(coins) + " coins").withStyle(ChatFormatting.GREEN));
-            if (rateReady) {
-                long coinsPerHour = Math.round(sessionXp * pricePerExp / hours);
-                lines.add(Component.literal(timeLabel + " ｜ " + signed(coinsPerHour) + "/h ｜ "
-                        + ChatReport.coins(xpPerHour) + " XP/h").withStyle(ChatFormatting.DARK_GRAY));
+        boolean shareEnabled = config.expShareEnabled;
+        boolean shareKnown = shareEnabled && ExpShareTracker.hasData();
+        List<ExpShareTracker.SharePet> sharePets = shareEnabled ? ExpShareTracker.pets() : List.of();
+        int slots = shareEnabled ? (shareKnown ? Math.max(1, ExpShareTracker.observedSlots()) : 0) : 0;
+
+        // 优先用每个槽位 lore 里写的真实比例；读不到时才退回配置系数。
+        long shareTotalXp = 0L;
+        double totalRate = 0.0;
+        List<Long> perPetXp = new ArrayList<>();
+        if (shareEnabled) {
+            if (!sharePets.isEmpty()) {
+                for (ExpShareTracker.SharePet pet : sharePets) {
+                    double rate = pet.ratePercent() > 0 ? pet.ratePercent() : config.expShareFactorPercent;
+                    totalRate += rate;
+                    long xp = Math.round(sessionXp * rate / 100.0);
+                    perPetXp.add(xp);
+                    shareTotalXp += xp;
+                }
             } else {
-                lines.add(Component.literal(timeLabel + " ｜ 速率计算中…").withStyle(ChatFormatting.DARK_GRAY));
+                long xp = Math.round(sessionXp * config.expShareFactorPercent / 100.0);
+                shareTotalXp = xp * Math.max(1, config.expShareSlots);
             }
-            lines.add(Component.literal("每 1M XP ≈ "
-                    + ChatReport.coins(Math.round(pricePerExp * 1_000_000.0)) + " coins")
-                    .withStyle(ChatFormatting.DARK_GRAY));
-        } else {
-            lines.add(Component.literal("行情未就绪（/gdrag 或开启自动扫描）").withStyle(ChatFormatting.GRAY));
-            lines.add(Component.literal(timeLabel + " ｜ "
-                    + (rateReady ? ChatReport.coins(xpPerHour) + " XP/h" : "速率计算中…"))
-                    .withStyle(ChatFormatting.DARK_GRAY));
         }
 
-        if (config.expShareEnabled && sessionXp > 0) {
-            List<ExpShareTracker.SharePet> sharePets = ExpShareTracker.pets();
-            int slots = Math.max(1, config.expShareSlots);
-            long perPet = Math.round(sessionXp * config.expShareFactorPercent / 100.0);
-            long total = perPet * slots;
-            String label = "Exp Share ×" + slots + " ≈ " + signed(total) + " XP";
-            if (pricePerExp > 0) {
-                label += " ｜ " + signed(Math.round(total * pricePerExp)) + " coins";
-            }
-            lines.add(Component.literal(label).withStyle(ChatFormatting.AQUA));
+        // 不确定来源：地牢内主宠是估算；分享槽在没读过 Exp Sharing 界面时也不确定。
+        String mainMark = estimating ? "≈ " : "";
+        String shareMark = (estimating || !shareKnown) ? "≈ " : "";
+        boolean totalUncertain = shareEnabled ? (estimating || !shareKnown) : estimating;
+        String totalMark = totalUncertain ? "≈ " : "";
 
-            for (int i = 0; i < sharePets.size() && i < slots; i++) {
+        // ▸ Main
+        MutableComponent mainHeader = Component.literal("▸ Main").withStyle(ChatFormatting.GREEN);
+        if (knownExp > 0) {
+            mainHeader.append(Component.literal("  " + PetXpCurve.levelLabel(knownExp))
+                    .withStyle(ChatFormatting.WHITE));
+        }
+        lines.add(mainHeader);
+        lines.add(Component.literal("   " + mainMark + signed(sessionXp) + " XP"
+                + (pricePerExp > 0 ? " ➜ " + signed(Math.round(sessionXp * pricePerExp)) + " coins" : ""))
+                .withStyle(ChatFormatting.WHITE));
+
+        // 地牢内打开 /pets 读到的真实值：只展示 15 秒，不参与累计与系数。
+        if (LevelingSession.pseudoVisible()) {
+            lines.add(Component.literal("   ◷ real " + PetXpCurve.levelLabel(LevelingSession.pseudoExp()))
+                    .withStyle(ChatFormatting.GRAY));
+        }
+
+        // ▸ Share
+        if (shareEnabled) {
+            MutableComponent shareHeader = Component.literal("▸ Share").withStyle(ChatFormatting.YELLOW);
+            if (shareKnown) {
+                String meta = "  x" + slots + (totalRate > 0 ? " · " + formatRate(totalRate) : "");
+                shareHeader.append(Component.literal(meta).withStyle(ChatFormatting.WHITE));
+            } else {
+                shareHeader.append(Component.literal("  x? · open /pets ➜ Exp Sharing")
+                        .withStyle(ChatFormatting.GRAY));
+            }
+            lines.add(shareHeader);
+
+            lines.add(Component.literal("   " + shareMark + signed(shareTotalXp) + " XP"
+                    + (pricePerExp > 0 ? " ➜ " + signed(Math.round(shareTotalXp * pricePerExp)) + " coins" : ""))
+                    .withStyle(ChatFormatting.WHITE));
+
+            for (int i = 0; i < sharePets.size(); i++) {
                 ExpShareTracker.SharePet pet = sharePets.get(i);
-                lines.add(Component.literal("  " + pet.name() + " Lvl " + pet.level()
-                        + "  ≈ " + signed(perPet) + " XP").withStyle(ChatFormatting.DARK_AQUA));
+                String levelPart = pet.level() > 0 ? " L" + pet.level() : "";
+                String ratePart = pet.ratePercent() > 0 ? "  " + formatRate(pet.ratePercent()) : "";
+                lines.add(Component.literal("   " + pet.name() + levelPart + ratePart
+                        + "  " + shareMark + signed(perPetXp.get(i)) + " XP")
+                        .withStyle(ChatFormatting.GRAY));
             }
         }
+
+        // ▸ Total
+        long totalXp = sessionXp + shareTotalXp;
+        lines.add(Component.literal("▸ Total").withStyle(ChatFormatting.RED));
+        StringBuilder total = new StringBuilder("   ").append(totalMark).append(signed(totalXp)).append(" XP");
+        if (pricePerExp > 0) {
+            total.append(" ➜ ").append(signed(Math.round(totalXp * pricePerExp))).append(" coins");
+            if (rateReady) {
+                total.append(" ➜ ").append(signed(Math.round(totalXp * pricePerExp / hours))).append("/h");
+            }
+        } else if (rateReady) {
+            total.append(" ➜ ").append(ChatReport.coins(Math.round(totalXp / hours))).append(" XP/h");
+        }
+        lines.add(Component.literal(total.toString()).withStyle(ChatFormatting.WHITE));
+
+        // 次要信息：⌛ 时间基准 + 单价
+        String footer = "   ⌛" + duration(baseMillis);
+        footer += pricePerExp > 0
+                ? " ｜ " + ChatReport.coins(Math.round(pricePerExp * 1_000_000.0)) + "/1M XP"
+                : " ｜ no market";
+        lines.add(Component.literal(footer).withStyle(ChatFormatting.GRAY));
 
         return lines;
     }

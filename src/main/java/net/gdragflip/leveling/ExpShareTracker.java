@@ -1,54 +1,76 @@
 package net.gdragflip.leveling;
 
-import com.google.gson.Gson;
 import com.google.gson.JsonObject;
-import net.gdragflip.GdragFlipMod;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
-import net.minecraft.core.component.DataComponents;
-import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.item.ItemStack;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
+import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 读取 Exp Sharing 菜单里的分享槽宠物。
+ * 读取 Exp Sharing 菜单里的分享槽。
  *
- * <p>与 Skysoft 的做法一致：打开 {@code /pets → Exp Sharing} 时读取槽位 30/31/32 的物品 NBT，
- * 没有实时接口。关闭界面后沿用上次读取结果。</p>
+ * <p>槽位有三格（30/31/32），但只有 Diana 的 Sharing is Caring 才会把 #2/#3 解锁；
+ * 未生效的槽位物品 lore 会写 {@code DISABLED}，这类槽位直接忽略、也不计入槽位数。</p>
+ *
+ * <p>生效槽位的 lore 会写明真实分享比例，例如
+ * {@code This pet is currently gaining 27% of your equipped pet's Exp}，
+ * 直接读这个百分比比用配置猜测准确。</p>
  */
 public final class ExpShareTracker {
-    private static final Pattern LEVEL_PATTERN = Pattern.compile("\\[Lvl ([\\d,]+)]");
-    private static final Gson GSON = new Gson();
-    private static final int[] SLOTS = {30, 31, 32};
+    private static final Pattern RATE_PATTERN = Pattern.compile("([\\d.]+)\\s*%\\s+of");
+    /** 玻璃标记（ACTIVE / DISABLED），决定槽位是否生效以及分享比例。 */
+    private static final int[] MARKER_SLOTS = {21, 22, 23};
+    /** 宠物本体：标记正下方一排的同一列。 */
+    private static final int[] PET_SLOTS = {30, 31, 32};
     private static final String MENU_TITLE = "Exp Sharing";
 
     private static volatile List<SharePet> pets = List.of();
+    /** 已开启（非 DISABLED）的槽位数量；0 = 还没读过界面。 */
+    private static volatile int observedSlots;
+    private static volatile long lastReadAt;
     private static int cooldown;
 
     private ExpShareTracker() {
     }
 
     /**
-     * @param name  宠物名（已去掉 [Lvl N] 前缀）
-     * @param level 物品名里显示的等级
-     * @param exp   物品 NBT 里的累计经验（未知为 -1）
-     * @param type  宠物内部类型（如 GOLDEN_DRAGON），未知为空串
+     * @param name        宠物名（已去掉 [Lvl N] 前缀）
+     * @param level       宠物等级（名字/lore/经验反算）
+     * @param exp         物品 NBT 里的累计经验，未知为 -1
+     * @param type        宠物内部类型（如 GOLDEN_DRAGON），未知为空串
+     * @param ratePercent 该槽位的分享比例（%），未知为 -1
      */
-    public record SharePet(String name, int level, long exp, String type) {
+    public record SharePet(String id, String name, int level, long exp, String type, double ratePercent) {
     }
 
     public static List<SharePet> pets() {
         return pets;
     }
 
+    /** 已开启的槽位数量；0 表示还没打开过 Exp Sharing 界面。 */
+    public static int observedSlots() {
+        return observedSlots;
+    }
+
+    public static boolean hasData() {
+        return observedSlots > 0;
+    }
+
+    /** 距离上次读 Exp Sharing 界面过了多久（毫秒）；没读过返回 -1。 */
+    public static long millisSinceRead() {
+        return lastReadAt <= 0 ? -1L : System.currentTimeMillis() - lastReadAt;
+    }
+
     public static void clear() {
         pets = List.of();
+        observedSlots = 0;
+        lastReadAt = 0L;
     }
 
     public static void tick(Minecraft client) {
@@ -65,84 +87,87 @@ public final class ExpShareTracker {
 
         AbstractContainerMenu menu = screen.getMenu();
         List<SharePet> read = new ArrayList<>();
-        for (int slot : SLOTS) {
-            if (slot >= menu.slots.size()) {
+        int enabled = 0;
+
+        for (int i = 0; i < MARKER_SLOTS.length; i++) {
+            int markerSlot = MARKER_SLOTS[i];
+            if (markerSlot >= menu.slots.size()) {
                 continue;
             }
-            ItemStack stack = menu.getSlot(slot).getItem();
-            if (stack.isEmpty()) {
+            ItemStack marker = menu.getSlot(markerSlot).getItem();
+            if (marker.isEmpty()) {
                 continue;
             }
-            String hoverName = stack.getHoverName().getString();
+            String markerLore = PetNbt.loreText(marker).toLowerCase(Locale.ROOT);
+            // DISABLED（Diana 未触发）与 Locked 的槽位既不展示也不计入。
+            if (markerLore.contains("disabled") || markerLore.contains("locked")) {
+                continue;
+            }
+            enabled++;
+            double rate = parseRate(markerLore);
+
+            int petSlot = PET_SLOTS[i];
+            ItemStack petStack = petSlot < menu.slots.size() ? menu.getSlot(petSlot).getItem() : ItemStack.EMPTY;
+            // 少数情况宠物直接放在标记槽（旧布局），兜底一下。
+            if (petStack.isEmpty() || PetNbt.petInfo(petStack) == null) {
+                ItemStack fallback = PetNbt.petInfo(marker) != null ? marker : ItemStack.EMPTY;
+                petStack = petStack.isEmpty() ? fallback : petStack;
+            }
+            if (petStack.isEmpty()) {
+                continue;
+            }
+
+            String hoverName = petStack.getHoverName().getString().replaceAll("§.", "");
             if (hoverName.contains("No pet")) {
                 continue;
             }
-            JsonObject info = petInfo(stack);
-            long exp = -1L;
-            String type = "";
-            if (info != null) {
-                if (info.has("exp")) {
-                    exp = (long) info.get("exp").getAsDouble();
-                }
-                if (info.has("type")) {
-                    type = info.get("type").getAsString();
-                }
-            }
-            read.add(new SharePet(cleanName(hoverName), levelOf(hoverName), exp, type));
+
+            JsonObject info = PetNbt.petInfo(petStack);
+            long exp = info == null ? -1L : PetNbt.exp(info);
+            String type = info == null ? "" : PetNbt.type(info);
+            int level = PetNbt.level(petStack, info);
+
+            read.add(new SharePet(PetNbt.id(info), PetNbt.name(petStack), level, exp, type, rate));
         }
+
+        boolean changed = enabled != observedSlots || !read.equals(pets);
         pets = List.copyOf(read);
-    }
+        observedSlots = enabled;
+        lastReadAt = System.currentTimeMillis();
 
-    private static String cleanName(String hoverName) {
-        return hoverName.replaceAll("\\[Lvl [\\d,]+]\\s*", "").replace("✦", "").trim();
-    }
-
-    private static int levelOf(String hoverName) {
-        Matcher matcher = LEVEL_PATTERN.matcher(hoverName);
-        if (!matcher.find()) {
-            return 0;
-        }
-        try {
-            return Integer.parseInt(matcher.group(1).replace(",", ""));
-        } catch (NumberFormatException e) {
-            return 0;
-        }
-    }
-
-    private static JsonObject petInfo(ItemStack stack) {
-        CompoundTag tag = stack.get(DataComponents.CUSTOM_DATA) == null
-                ? null
-                : stack.get(DataComponents.CUSTOM_DATA).copyTag();
-        if (tag == null) {
-            return null;
-        }
-
-        String json = readString(tag, "petInfo");
-        if (json.isEmpty()) {
-            Optional<CompoundTag> extra = tag.getCompound("ExtraAttributes");
-            if (extra.isPresent()) {
-                json = readString(extra.get(), "petInfo");
+        // 数据有变化才提示一次（同一轮菜单打开期间只提示一次）。
+        if (changed && client.player != null) {
+            double rate = 0.0;
+            for (SharePet pet : read) {
+                rate += pet.ratePercent();
             }
+            StringBuilder msg = new StringBuilder("Exp Share 已更新 · Slot x").append(enabled);
+            if (rate > 0) {
+                msg.append(" · ").append(rate == Math.floor(rate)
+                        ? String.valueOf((int) rate) : String.format(Locale.ROOT, "%.1f", rate)).append("%");
+            }
+            if (!read.isEmpty()) {
+                msg.append(" · ").append(read.get(0).name());
+            }
+            client.player.sendSystemMessage(net.gdragflip.chat.ChatReport.info(
+                    msg.toString(), net.minecraft.ChatFormatting.GREEN));
         }
-        if (json.isEmpty()) {
-            return null;
-        }
-        try {
-            return GSON.fromJson(json, JsonObject.class);
-        } catch (RuntimeException e) {
-            GdragFlipMod.LOGGER.debug("petInfo 解析失败", e);
-            return null;
+
+        if (net.gdragflip.config.GdragConfig.get().debugVerbose) {
+            net.gdragflip.GdragFlipMod.LOGGER.info("[expshare] enabled={} pets={}", enabled, read);
         }
     }
 
-    private static String readString(CompoundTag tag, String key) {
-        if (!tag.contains(key)) {
-            return "";
+    /** 从 lore "… ganing 27% of your equipped pet's Exp" 里取分享比例。 */
+    private static double parseRate(String lore) {
+        Matcher matcher = RATE_PATTERN.matcher(lore);
+        if (!matcher.find()) {
+            return -1.0;
         }
         try {
-            return tag.getString(key).orElse("");
-        } catch (RuntimeException e) {
-            return "";
+            return Double.parseDouble(matcher.group(1));
+        } catch (NumberFormatException e) {
+            return -1.0;
         }
     }
 }

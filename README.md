@@ -18,8 +18,15 @@ Hypixel SkyBlock 客户端 Fabric mod：分析拍卖行里 **100 级以上的 Go
 | `/gdrag cache clear\|info` | 清空 / 查看经验缓存 |
 | `/gdrag reload` | 重新读取 `config/gdragflip.json` |
 | `/gdrag hud` | 开关「升级助手」HUD |
-| `/gdrag session [reset]` | 查看 / 重置本次会话经验统计 |
+| `/gdrag hud move` | 拖动模式调整 HUD 位置（方向键可微调） |
+| `/gdrag hud pos <x> <y>` | 直接用坐标设置 HUD 位置 |
+| `/gdrag session` | 查看会话状态（绑定 / 累计 / 速率 / 系数） |
+| `/gdrag session start` | 开始新会话：召唤金龙后打开 `/pets` 绑定 UUID |
+| `/gdrag session reset` | 清空累计并解除绑定 |
 | `/gdrag settings` | 打开升级助手设置界面 |
+| `/gdrag debug state` | 打印绑定 / 地牢 / 系数 / 上次校准 |
+| `/gdrag debug share` | 把 Exp Sharing 各槽位内容写入日志（排查用） |
+| `/gdrag debug on\|off` | 开关详细日志 |
 | `/gdrag help` | 命令帮助 |
 
 `/gdrag 125 660m` 这种旧写法仍然可用（≤50 视为条数，否则视为等级）。
@@ -63,44 +70,56 @@ Lvl 1~99 是 `Golden Dragon Egg`（未破壳、不能装备宠物物品），因
 
 等级只是展示用的换算结果，内部一律用累计经验。
 
-## 升级助手（本次会话收益）
+## 升级助手（会话收益）
 
-在地牢刷怪时实时统计金龙获得的经验，并按当前行情折算成金币，HUD 显示：
+在地牢刷怪时统计金龙获得的经验，按当前行情折算金币：
 
 ```
-金龙升级助手
-Lvl 123 +47%
-本次 +1.24M XP
-≈ +1.52M coins
-基准 1.22M/1M XP ｜ 1.9M XP/h
-Exp Share ×1 ≈ +223K XP ｜ +273K coins
-  骷髅 Lvl 100  ≈ +223K XP
+✦ Gdrag Flip
+▸ Main  Lvl 181 +85%
+   ≈ +1.24M XP ➜ +1.52M coins
+▸ Share  x1 · 37%
+   ≈ +460K XP ➜ +561K coins
+   Golden Dragon L154  37%  ≈ +460K XP
+▸ Total
+   ≈ +1.70M XP ➜ +2.08M coins ➜ +34.2M/h
+   ⌛18m ｜ 1.2M/1M XP
 ```
 
-- **数据来源是 Tab 列表的 Pet Widget**（`[Lvl 123] Golden Dragon` + `33,915/179.7k XP (18.9%)`）。
-  这是客户端唯一能实时拿到宠物等级/经验进度的渠道，**必须在 `/tab` 里开启 Pet Widget**；
-  没开时 HUD 会提示「未检测到宠物 Widget」。
-- 每 5 tick 采样一次，用累计经验求差累加，升级、跨级自然处理；切宠物或数据回退只重置基准，不计负值。
-- **累计值不会自动重置**：换世界、退出游戏、重启客户端都会保留（存于 `config/gdragflip-session.json`），
-  只有 `/gdrag session reset`（或设置界面里的重置按钮）才清零。
-- **只统计金龙**；当前召唤的不是金龙时 HUD 显示「请装备金龙宠物」，不计收益。
-- 收益 = 本次经验 × **每经验单价**（即拍卖扫描的 A/B 基准，`/gdrag` 或自动扫描会持续刷新）。
-- **Exp Share**：打开一次 `/pets → Exp Sharing`，mod 会读取槽位 30/31/32 的宠物（名字/等级）；
-  每个分享槽的收益按「本次经验 × 分享系数」估算，系数默认 **18%**（Taming 60 的 12% × 同技能宠物 1.5 倍），
-  槽位数按 Diana 的 Sharing is Caring 设为 1 或 3。
-- **会话绑定**：`/gdrag session start` → 提示先装备要升级的宠物，然后打开一次 `/pets` 菜单，
-  读取 `petInfo.active` 那只的 **UUID** 并绑定；之后当前宠物与绑定不一致（召唤了别的宠物 / 菜单里换了另一只金龙）
-  会暂停统计，HUD 显示 `⚠ 当前宠物不是 X（已暂停）`。
-- 命令：`/gdrag hud` 开关 HUD、`/gdrag session [start|reset]`、`/gdrag settings` 设置界面。
-- **HUD 可拖动**：`/gdrag settings` → 「调整 HUD 位置」，按住 HUD 拖到想要的位置，松手自动保存。
-- 排查用：`/gdrag debug tab` 会把解析到的 tab 行（含序号）打到聊天栏，方便确认 Pet Widget 的文本格式。
-- **地牢内估算**：Hypixel 在地牢实例里不提供 Pet Widget，此时改为解析 action bar 的
-  `+1,234 Combat (...)`，按 `dungeonPetXpMultiplier`（默认 1.5）换算成宠物经验，HUD 标注「地牢估算模式」。
-  离开地牢、Widget 恢复后会自动用真实数据重新对基准，不会重复累加。
-- **自动校准**：打开 `/pets` 菜单时读取金龙真实 `exp`，把「上次校准之后」的估算增量替换成真实增量，
-  并学习一个修正系数（`estimateFactor`，指数平滑，钳制 0.2~5），后续估算自动带上偏差修正。
-- **地牢计时**：没有 Widget 且仍在持续获得经验时开始累计地牢时间（离开/停手 2 分钟自动暂停），
-  HUD 的 `xx/h` 收益与 XP/h 以这段地牢时间为分母。
+**数据来源只有两类**（不再读取 Tab 的 Pet Widget）：
+
+| 来源 | 提供 | 时机 |
+|---|---|---|
+| action bar 估算 | `+N Combat` × `dungeonPetXpMultiplier` × 校准系数 | 地牢内（侧边栏出现 `The Catacombs (F1…M7)`） |
+| `/pets` 菜单 | 真实 `exp` + 宠物 UUID | 打开菜单时 |
+| `/pets → Exp Sharing` | 槽位宠物、真实分享比例 | 打开菜单时 |
+
+**完整流程**
+
+1. `/gdrag session start` → 召唤金龙 → 打开 `/pets`：按 `petInfo.active` 绑定 UUID 并记录起点经验；
+2. 进地牢后自动开始估算（侧边栏判定，排除 `Queue`）；
+3. 地牢内打开 `/pets`：只在 HUD 显示真实值 15 秒（`◷ real Lvl X +Y%`），**不改累计、不改系数**；
+4. 出地牢：聊天提示「已出地牢 · 打开 /pets 校准」；
+5. 打开 `/pets`：**按 UUID 在列表里找同一只宠物**（与是否出战无关），
+   找到就校准（对齐累计 + 学习系数），找不到提示翻页；
+6. 多次「进本 → 出本」可以只在最后统一校准一次。
+
+**校准公式**
+
+```
+估算贡献 = 真实增量 − 精确增量
+系数     = 估算贡献 ÷ 未修正估算累计
+```
+
+系数不限制取值范围；样本不足（<5 万 XP / <60 秒 / <10 次事件）时只对齐总量。
+每次读菜单都会在聊天栏给出结果（绑定成功 / 校准算式 / 请翻页）。
+
+**其他行为**
+
+- 累计持久化在 `config/gdragflip-session.json`，只有 `/gdrag session reset` 才清零；
+- 换宠（召唤消息里名字与绑定不符）会暂停统计，HUD 显示 `⚠ pet mismatch`；
+- 地牢计时只在「本内 + 宠物匹配 + 120 秒内有经验」时累加，速率以它为分母；
+- HUD 地牢外显示 `▸ synced 3m ago`（10 分钟内）或 `▸ open /pets to sync`。
 
 配置项（`gdragflip.json`）：
 
@@ -109,10 +128,10 @@ Exp Share ×1 ≈ +223K XP ｜ +273K coins
 | `levelingHud` | false | 是否显示升级助手 HUD |
 | `hudX` / `hudY` | 4 / 4 | HUD 左上角坐标 |
 | `expShareEnabled` | true | 是否统计 Exp Share |
-| `expShareFactorPercent` | 18.0 | 每个分享槽的估算系数（%） |
-| `expShareSlots` | 1 | 分享槽数量（1 或 3） |
-| `dungeonEstimateEnabled` | true | 地牢内没有 Pet Widget 时用 action bar 技能经验估算 |
-| `dungeonPetXpMultiplier` | 1.5 | 技能经验 → 宠物经验倍率（金龙 = Combat 宠物） |
+| `expShareFactorPercent` | 18.0 | 读不到槽位比例时的兜底系数（%） |
+| `expShareSlots` | 1 | 未读过 Exp Sharing 时的槽位数（1 或 3） |
+| `dungeonEstimateEnabled` | true | 地牢内用 action bar 技能经验估算 |
+| `dungeonPetXpMultiplier` | 1.5 | 技能经验 → 宠物经验的基础倍率（金龙 = Combat 宠物） |
 
 ## 数据源与限流
 

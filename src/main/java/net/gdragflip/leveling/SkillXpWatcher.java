@@ -46,16 +46,10 @@ public final class SkillXpWatcher {
             }
             Matcher levelUp = LEVEL_UP_PATTERN.matcher(text);
             if (levelUp.find()) {
-                String pet = levelUp.group(1);
-                // 任意宠物升级都说明它正在出战：可用于纠正 autopet 静默换宠的情况。
-                LevelingSession.onPetObserved(pet);
-                // 绑定的宠物升级 = 免费校准锚点（不需要打开 /pets）。
-                if (LevelingSession.matchesBound(pet)) {
-                    try {
-                        LevelingSession.onLevelUpAnchor(Integer.parseInt(levelUp.group(2)));
-                    } catch (NumberFormatException ignored) {
-                        // 等级解析失败就跳过
-                    }
+                // 升级消息只有名字、没有 UUID：分享槽里的同名宠物升级也会触发，
+                // 无法可靠区分是哪一只，因此**不用于身份判定、也不作为校准锚点**。
+                if (GdragConfig.get().debugVerbose) {
+                    GdragFlipMod.LOGGER.info("[ignore] 升级消息（不采信）：{} L{}", levelUp.group(1), levelUp.group(2));
                 }
             }
             return;
@@ -69,8 +63,8 @@ public final class SkillXpWatcher {
         if (!LevelingSession.bound() || LevelingSession.mismatch()) {
             return;
         }
-        // Pet Widget 正常时用真实数据，不叠加估算。
-        if (LevelingSession.widgetDetected()) {
+        // 只在地牢内估算；地牢外等 /pets 的真实值。
+        if (!LevelingSession.inDungeon()) {
             return;
         }
         Matcher matcher = ACTION_BAR_PATTERN.matcher(text);

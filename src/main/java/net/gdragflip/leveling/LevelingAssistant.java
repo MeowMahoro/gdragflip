@@ -6,18 +6,24 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
 
 /**
- * 升级助手的采样调度：每 5 tick 读一次 tab 宠物 Widget，并顺带读取 Exp Sharing 菜单。
+ * 升级助手调度：地牢判定、地牢计时、菜单读取、出本提示。
  *
- * <p>地牢内 Hypixel 不显示 Pet Widget，此时由 {@link SkillXpWatcher} 从 action bar 估算。</p>
+ * <p>数据来源只有两类：</p>
+ * <ol>
+ *   <li><b>估算</b>：地牢内由 {@link SkillXpWatcher} 解析 action bar 技能经验；</li>
+ *   <li><b>真实值</b>：{@link PetMenuReader}（/pets）与 {@link ExpShareTracker}（Exp Sharing）。</li>
+ * </ol>
+ *
+ * <p>不再读取 Tab 的 Pet Widget：它在副本里不显示，且与 /pets 的真实值重复。</p>
  */
 public final class LevelingAssistant {
-    private static final int SAMPLE_INTERVAL_TICKS = 5;
     private static final int SAVE_INTERVAL_TICKS = 1200;
 
-    private static volatile PetWidgetReader.Snapshot snapshot = PetWidgetReader.Snapshot.MISSING;
     private static volatile Screen pendingScreen;
     private static int ticks;
     private static long lastTickAt = System.currentTimeMillis();
+    private static boolean wasInDungeon;
+    private static long lastCalibrationPromptAt;
 
     private LevelingAssistant() {
     }
@@ -39,12 +45,17 @@ public final class LevelingAssistant {
         Screen screen = pendingScreen;
         if (screen != null) {
             pendingScreen = null;
-            client.gui.setScreen(screen);
+            client.setScreenAndShow(screen);
         }
+
+        if (client.gui.screen() instanceof net.gdragflip.ui.HudEditorScreen editor) {
+            editor.poll(client);
+        }
+
+        DungeonDetector.tick(client);
 
         if (client.player == null) {
             LevelingSession.onWorldLeave();
-            snapshot = PetWidgetReader.Snapshot.MISSING;
             return;
         }
 
@@ -55,8 +66,9 @@ public final class LevelingAssistant {
         ExpShareTracker.tick(client);
         PetMenuReader.tick(client);
 
-        // 地牢计时：tab 上没有任何宠物 Widget、宠物匹配、且仍在持续获得经验时才算「在打」。
-        if (!snapshot.found() && !LevelingSession.mismatch() && LevelingSession.estimatedWithin(120_000L)) {
+        // 地牢计时：在本内、宠物匹配、且仍在持续获得经验时才算「在打」。
+        if (LevelingSession.inDungeon() && !LevelingSession.mismatch()
+                && LevelingSession.estimatedWithin(120_000L)) {
             LevelingSession.addDungeonMillis(delta);
         }
 
@@ -65,15 +77,16 @@ public final class LevelingAssistant {
         if (ticks % SAVE_INTERVAL_TICKS == 0) {
             LevelingSession.saveIfDirty();
         }
-        if (ticks % SAMPLE_INTERVAL_TICKS != 0) {
-            return;
-        }
-        PetWidgetReader.Snapshot read = PetWidgetReader.read(client);
-        snapshot = read;
-        LevelingSession.sample(read);
-    }
 
-    public static PetWidgetReader.Snapshot snapshot() {
-        return snapshot;
+        // 出地牢后提示去 /pets 校准一次。
+        boolean inDungeon = LevelingSession.inDungeon();
+        if (wasInDungeon && !inDungeon && LevelingSession.bound()) {
+            if (now - lastCalibrationPromptAt > 60_000L) {
+                lastCalibrationPromptAt = now;
+                client.player.sendSystemMessage(net.gdragflip.chat.ChatReport.info(
+                        "已出地牢 · 打开 /pets 校准", net.minecraft.ChatFormatting.YELLOW));
+            }
+        }
+        wasInDungeon = inDungeon;
     }
 }

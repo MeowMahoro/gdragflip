@@ -7,6 +7,7 @@ import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
+import net.gdragflip.GdragFlipMod;
 import net.gdragflip.analysis.GdragAnalyzer;
 import net.gdragflip.analysis.GdragCustom;
 import net.gdragflip.analysis.PetXpCurve;
@@ -79,6 +80,7 @@ public final class GdragCommand {
                 .then(ClientCommands.literal("debug")
                         .then(ClientCommands.literal("tab").executes(GdragCommand::debugTab))
                         .then(ClientCommands.literal("state").executes(GdragCommand::debugState))
+                        .then(ClientCommands.literal("share").executes(GdragCommand::debugShare))
                         .then(ClientCommands.literal("on").executes(context -> setDebug(context, true)))
                         .then(ClientCommands.literal("off").executes(context -> setDebug(context, false))))
 
@@ -342,10 +344,9 @@ public final class GdragCommand {
                 LevelingSession.currentPetKnown() ? LevelingSession.currentPetName() : "未知（尚未收到召唤消息）"),
                 ChatFormatting.GRAY));
 
-        if (!LevelingSession.widgetDetected()
-                && !LevelingSession.estimatedWithin(120_000L)
-                && LevelingSession.dungeonMillis() == 0L) {
-            source.sendFeedback(ChatReport.info("未检测到宠物 Widget：请在 /tab 开启 Pet Widget", ChatFormatting.RED));
+        if (LevelingSession.bound() && !LevelingSession.inDungeon()
+                && !LevelingSession.estimatedWithin(120_000L)) {
+            source.sendFeedback(ChatReport.info("当前不在估算状态：打开 /pets 可校准并刷新真实值", ChatFormatting.YELLOW));
         }
 
         if (!ExpShareTracker.pets().isEmpty()) {
@@ -381,7 +382,6 @@ public final class GdragCommand {
 
     private static int debugState(CommandContext<FabricClientCommandSource> context) {
         FabricClientCommandSource source = context.getSource();
-        PetWidgetReader.Snapshot snapshot = LevelingAssistant.snapshot();
         String bound = LevelingSession.bound()
                 ? LevelingSession.boundPetName() + (LevelingSession.boundConfident() ? "（精确绑定）" : "（名字绑定）")
                 : "未绑定";
@@ -398,19 +398,64 @@ public final class GdragCommand {
                 LevelingSession.dungeonMillis() / 60_000L,
                 LevelingSession.estimateFactor(),
                 estimateAge < 0 ? "从未" : (estimateAge / 1000) + " 秒前"), ChatFormatting.GRAY));
-        source.sendFeedback(ChatReport.info("待校准样本：%s XP（≥5 万且间隔 ≥60 秒才会更新系数）".formatted(
-                ChatReport.coins(LevelingSession.rawSinceAnchor())), ChatFormatting.DARK_GRAY));
+        source.sendFeedback(ChatReport.info("待校准样本：估算 %s XP / %d 次 ｜ 精确 %s XP".formatted(
+                ChatReport.coins(LevelingSession.rawSinceAnchor()),
+                LevelingSession.estimateEvents(),
+                ChatReport.coins(LevelingSession.preciseSinceAnchor())), ChatFormatting.DARK_GRAY));
+        String calNote = LevelingSession.lastCalibrationNote();
+        if (!calNote.isEmpty()) {
+            source.sendFeedback(ChatReport.info("LastCal: " + calNote, ChatFormatting.DARK_GRAY));
+        }
 
-        source.sendFeedback(ChatReport.info("Widget：found=%s pet='%s' level=%d exp=%s ｜ Widget 检测=%s".formatted(
-                snapshot.found(), snapshot.petName(), snapshot.level(),
-                ChatReport.coins(snapshot.totalExp()),
-                LevelingSession.widgetDetected() ? "是" : "否"), ChatFormatting.GRAY));
+        long knownExp = LevelingSession.lastKnownExp();
+        source.sendFeedback(ChatReport.info("LastReal: %s".formatted(
+                knownExp > 0
+                        ? net.gdragflip.analysis.PetXpCurve.levelLabel(knownExp) + " (exp " + knownExp + ")"
+                        : "尚未从 /pets 读到"),
+                ChatFormatting.GRAY));
+
+        source.sendFeedback(ChatReport.info("Dungeon: %s%s".formatted(
+                net.gdragflip.leveling.DungeonDetector.inDungeon() ? "yes" : "no",
+                net.gdragflip.leveling.DungeonDetector.inDungeon()
+                        ? " (" + net.gdragflip.leveling.DungeonDetector.floor() + ")"
+                        : ""), ChatFormatting.GRAY));
+
+        double base = GdragConfig.get().dungeonPetXpMultiplier;
+        double factor = LevelingSession.estimateFactor();
+        source.sendFeedback(ChatReport.info("Eff: 1 Combat XP -> %.2f pet XP (base %.2f * f%.3f)".formatted(
+                base * factor, base, factor), ChatFormatting.GRAY));
 
         double price = ScanService.lastResult() != null && ScanService.lastResult().hasPricing()
                 ? ScanService.lastResult().pricePerExp() : 0.0;
         source.sendFeedback(ChatReport.info("单价：%s coins/XP ｜ 详细日志：%s".formatted(
                 price > 0 ? String.format("%.4f", price) : "行情未就绪",
                 GdragConfig.get().debugVerbose ? "开" : "关"), ChatFormatting.GRAY));
+        return 1;
+    }
+
+    /** 把 Exp Sharing 界面 18~40 号槽位的内容写进日志，用于校准槽位坐标。 */
+    private static int debugShare(CommandContext<FabricClientCommandSource> context) {
+        FabricClientCommandSource source = context.getSource();
+        Minecraft client = Minecraft.getInstance();
+        if (!(client.gui.screen() instanceof net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<?> screen)
+                || !screen.getTitle().getString().contains("Exp Sharing")) {
+            source.sendFeedback(ChatReport.info("请先打开 /pets → Exp Sharing 界面再执行", ChatFormatting.RED));
+            return 0;
+        }
+
+        net.minecraft.world.inventory.AbstractContainerMenu menu = screen.getMenu();
+        GdragFlipMod.LOGGER.info("[share] ---- Exp Sharing 槽位转储 (size={}) ----", menu.slots.size());
+        for (int slot = 18; slot < menu.slots.size() && slot <= 44; slot++) {
+            net.minecraft.world.item.ItemStack stack = menu.getSlot(slot).getItem();
+            if (stack.isEmpty()) {
+                continue;
+            }
+            String name = stack.getHoverName().getString().replaceAll("§.", "");
+            String lore = net.gdragflip.leveling.PetNbt.loreText(stack)
+                    .replaceAll("§.", "").replace("\n", " / ").trim();
+            GdragFlipMod.LOGGER.info("[share] slot={} name='{}' lore='{}'", slot, name, lore);
+        }
+        source.sendFeedback(ChatReport.info("已写入 latest.log，搜索 [share]", ChatFormatting.GREEN));
         return 1;
     }
 
@@ -429,7 +474,10 @@ public final class GdragCommand {
         context.getSource().sendFeedback(ChatReport.info(
                 "开始新会话：请装备要升级的宠物，然后打开一次 /pets 菜单完成 UUID 绑定", ChatFormatting.YELLOW));
         context.getSource().sendFeedback(ChatReport.info(
-                "绑定后再开 /pets 会自动用真实经验校准估算值", ChatFormatting.GRAY));
+                "地牢外开 /pets = 校准；地牢内开 /pets = 仅显示真实值 15 秒（不改累计、不改系数）",
+                ChatFormatting.GRAY));
+        context.getSource().sendFeedback(ChatReport.info(
+                "开 /pets 时顺手打开 Exp Sharing，HUD 的分享槽才会更新", ChatFormatting.DARK_GRAY));
         return 1;
     }
 
