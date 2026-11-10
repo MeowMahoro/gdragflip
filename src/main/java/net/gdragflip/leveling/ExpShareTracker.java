@@ -33,6 +33,7 @@ public final class ExpShareTracker {
     private static volatile List<SharePet> pets = List.of();
     /** 已开启（非 DISABLED）的槽位数量；0 = 还没读过界面。 */
     private static volatile int observedSlots;
+    private static volatile long lastReadAt;
     private static int cooldown;
 
     private ExpShareTracker() {
@@ -61,9 +62,15 @@ public final class ExpShareTracker {
         return observedSlots > 0;
     }
 
+    /** 距离上次读 Exp Sharing 界面过了多久（毫秒）；没读过返回 -1。 */
+    public static long millisSinceRead() {
+        return lastReadAt <= 0 ? -1L : System.currentTimeMillis() - lastReadAt;
+    }
+
     public static void clear() {
         pets = List.of();
         observedSlots = 0;
+        lastReadAt = 0L;
     }
 
     public static void tick(Minecraft client) {
@@ -125,6 +132,7 @@ public final class ExpShareTracker {
 
         pets = List.copyOf(read);
         observedSlots = enabled;
+        lastReadAt = System.currentTimeMillis();
 
         if (net.gdragflip.config.GdragConfig.get().debugVerbose) {
             net.gdragflip.GdragFlipMod.LOGGER.info("[expshare] enabled={} pets={}", enabled, read);

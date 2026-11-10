@@ -139,6 +139,12 @@ public final class LevelingHud implements HudElement {
                 + (pricePerExp > 0 ? " ➜ " + signed(Math.round(sessionXp * pricePerExp)) + " coins" : ""))
                 .withStyle(ChatFormatting.WHITE));
 
+        // 地牢内打开 /pets 读到的真实值：只展示 15 秒，不参与累计与系数。
+        if (LevelingSession.pseudoVisible()) {
+            lines.add(Component.literal("   ◷ real " + PetXpCurve.levelLabel(LevelingSession.pseudoExp()))
+                    .withStyle(ChatFormatting.GRAY));
+        }
+
         // ▸ Share
         if (shareEnabled) {
             MutableComponent shareHeader = Component.literal("▸ Share").withStyle(ChatFormatting.YELLOW);

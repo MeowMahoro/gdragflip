@@ -25,6 +25,7 @@ public final class PetMenuReader {
     private static int cooldown;
     private static long lastMismatchAt;
     private static long lastBindWarnAt;
+    private static long lastShareHintAt;
 
     private PetMenuReader() {
     }
@@ -111,6 +112,9 @@ public final class PetMenuReader {
                         "已绑定：" + target.name() + "（未识别到 active 标记，仅按名字校验）",
                         ChatFormatting.YELLOW));
             }
+            case "pseudo" -> {
+                // 地牢内读到真实值：只在 HUD 展示 15 秒，不校准、不打断估算。
+            }
             case "mismatch" -> {
                 long now = System.currentTimeMillis();
                 if (now - lastMismatchAt > 10_000L) {
@@ -124,6 +128,26 @@ public final class PetMenuReader {
                 // calibrated / ignored：静默
             }
         }
+
+        remindExpShare(client);
+    }
+
+    /** 打开 /pets 但没顺手打开 Exp Sharing 时提醒一次（HUD 分享槽不会更新）。 */
+    private static void remindExpShare(Minecraft client) {
+        if (client.player == null || !LevelingSession.bound()) {
+            return;
+        }
+        long since = ExpShareTracker.millisSinceRead();
+        if (since >= 0 && since < 120_000L) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastShareHintAt < 120_000L) {
+            return;
+        }
+        lastShareHintAt = now;
+        client.player.sendSystemMessage(ChatReport.info(
+                "Exp Share 未更新：请同时打开 /pets ➜ Exp Sharing", ChatFormatting.YELLOW));
     }
 
     private static void warnBind(Minecraft client, String message) {

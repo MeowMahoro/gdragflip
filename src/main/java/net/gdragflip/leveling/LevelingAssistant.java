@@ -18,6 +18,8 @@ public final class LevelingAssistant {
     private static volatile Screen pendingScreen;
     private static int ticks;
     private static long lastTickAt = System.currentTimeMillis();
+    private static boolean wasInDungeon;
+    private static long lastCalibrationPromptAt;
 
     private LevelingAssistant() {
     }
@@ -46,6 +48,8 @@ public final class LevelingAssistant {
             editor.poll(client);
         }
 
+        DungeonDetector.tick(client);
+
         if (client.player == null) {
             LevelingSession.onWorldLeave();
             snapshot = PetWidgetReader.Snapshot.MISSING;
@@ -59,8 +63,9 @@ public final class LevelingAssistant {
         ExpShareTracker.tick(client);
         PetMenuReader.tick(client);
 
-        // 地牢计时：tab 上没有任何宠物 Widget、宠物匹配、且仍在持续获得经验时才算「在打」。
-        if (!snapshot.found() && !LevelingSession.mismatch() && LevelingSession.estimatedWithin(120_000L)) {
+        // 地牢计时：侧边栏判定在本内、宠物匹配、且仍在持续获得经验时才算「在打」。
+        if (LevelingSession.inDungeon() && !LevelingSession.mismatch()
+                && LevelingSession.estimatedWithin(120_000L)) {
             LevelingSession.addDungeonMillis(delta);
         }
 
@@ -75,6 +80,17 @@ public final class LevelingAssistant {
         PetWidgetReader.Snapshot read = PetWidgetReader.read(client);
         snapshot = read;
         LevelingSession.sample(read);
+
+        // 出地牢（Widget 恢复）后提示去校准一次。
+        boolean inDungeon = LevelingSession.inDungeon();
+        if (wasInDungeon && !inDungeon && LevelingSession.bound() && client.player != null) {
+            if (now - lastCalibrationPromptAt > 60_000L) {
+                lastCalibrationPromptAt = now;
+                client.player.sendSystemMessage(net.gdragflip.chat.ChatReport.info(
+                        "已出地牢 · 打开 /pets 校准", net.minecraft.ChatFormatting.YELLOW));
+            }
+        }
+        wasInDungeon = inDungeon;
     }
 
     public static PetWidgetReader.Snapshot snapshot() {

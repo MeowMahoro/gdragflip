@@ -413,6 +413,12 @@ public final class GdragCommand {
                 ChatReport.coins(snapshot.totalExp()),
                 LevelingSession.widgetDetected() ? "是" : "否"), ChatFormatting.GRAY));
 
+        source.sendFeedback(ChatReport.info("Dungeon: %s%s".formatted(
+                net.gdragflip.leveling.DungeonDetector.inDungeon() ? "yes" : "no",
+                net.gdragflip.leveling.DungeonDetector.inDungeon()
+                        ? " (" + net.gdragflip.leveling.DungeonDetector.floor() + ")"
+                        : ""), ChatFormatting.GRAY));
+
         double base = GdragConfig.get().dungeonPetXpMultiplier;
         double factor = LevelingSession.estimateFactor();
         source.sendFeedback(ChatReport.info("Eff: 1 Combat XP -> %.2f pet XP (base %.2f * f%.3f)".formatted(
@@ -467,7 +473,10 @@ public final class GdragCommand {
         context.getSource().sendFeedback(ChatReport.info(
                 "开始新会话：请装备要升级的宠物，然后打开一次 /pets 菜单完成 UUID 绑定", ChatFormatting.YELLOW));
         context.getSource().sendFeedback(ChatReport.info(
-                "绑定后再开 /pets 会自动用真实经验校准估算值", ChatFormatting.GRAY));
+                "地牢外开 /pets = 校准；地牢内开 /pets = 仅显示真实值 15 秒（不改累计、不改系数）",
+                ChatFormatting.GRAY));
+        context.getSource().sendFeedback(ChatReport.info(
+                "开 /pets 时顺手打开 Exp Sharing，HUD 的分享槽才会更新", ChatFormatting.DARK_GRAY));
         return 1;
     }
 

@@ -63,6 +63,11 @@ public final class LevelingSession {
     private static boolean mismatch;
     /** 估算值的修正系数（真实增量 / 未修正的估算增量）。 */
     private static double estimateFactor = 1.0;
+    /** 地牢内打开 /pets 读到的「伪真实值」：只展示 15 秒，不参与校准。 */
+    private static long pseudoExp = -1L;
+    private static long pseudoAt;
+    private static long lastWidgetSeenAt;
+    private static final long PSEUDO_VISIBLE_MILLIS = 15_000L;
     /** 自上次校准点以来「未乘系数」的估算经验，用于一次解出系数。 */
     private static long rawSinceAnchor;
     /** 自上次校准点以来通过精确数据（Pet Widget）累加的经验。 */
@@ -169,6 +174,7 @@ public final class LevelingSession {
     public static synchronized void sample(PetWidgetReader.Snapshot snapshot) {
         widgetDetected = snapshot.found();
         if (snapshot.found()) {
+            lastWidgetSeenAt = System.currentTimeMillis();
             // 精确数据可用：立刻撤销「估算」标记，不必等 120 秒窗口过期。
             lastEstimateAt = 0L;
             // 必须先观测再判 mismatch，否则 mismatch 一旦置位就没有恢复路径。
@@ -258,6 +264,8 @@ public final class LevelingSession {
         rawSinceAnchor = 0L;
         preciseSinceAnchor = 0L;
         estimateEvents = 0;
+        pseudoExp = -1L;
+        pseudoAt = 0L;
         lastRealPetId = "";
         pendingRebaseline = false;
         estimateFactor = 1.0;
@@ -476,8 +484,47 @@ public final class LevelingSession {
         }
 
         mismatch = false;
+
+        // 地牢内读到的真实值只作为「伪真实值」展示 15 秒：
+        // 这段路线上还有未捕获的加成，直接用来校准会把系数带歪。
+        if (inDungeon()) {
+            setPseudoReal(exp);
+            return "pseudo";
+        }
+
         onRealExpRead(exp, id);
         return "calibrated";
+    }
+
+    /**
+     * 是否处于「地牢内」：Tab 上没有宠物 Widget，且最近 120 秒有 action bar 经验。
+     * 地牢外的 Widget 正常显示，所以不会误判。
+     */
+    public static synchronized boolean inDungeon() {
+        // 以侧边栏计分板为准（与 NoammAddons 一致），不再用 Widget 是否消失来猜。
+        return DungeonDetector.inDungeon();
+    }
+
+    /** 清掉伪真实值（重置会话时）。 */
+    public static synchronized void clearPseudoReal() {
+        pseudoExp = -1L;
+        pseudoAt = 0L;
+    }
+
+    public static synchronized void setPseudoReal(long exp) {
+        if (exp > 0) {
+            pseudoExp = exp;
+            pseudoAt = System.currentTimeMillis();
+        }
+    }
+
+    /** 地牢内读到的真实值是否还在 15 秒展示窗口内。 */
+    public static synchronized boolean pseudoVisible() {
+        return pseudoExp > 0 && System.currentTimeMillis() - pseudoAt <= PSEUDO_VISIBLE_MILLIS;
+    }
+
+    public static synchronized long pseudoExp() {
+        return pseudoExp;
     }
 
     /** 地牢内计时：只在「无 Pet Widget 且仍在持续获得经验」时累加。 */
